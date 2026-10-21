@@ -1,0 +1,25 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html,
+body {
+  font-family: 'Figtree', sans-serif;
+  background: #f3f4f6;
+  color: #191919;
+}
+
+/* Recharts eredita Figtree anche nelle etichette SVG. */
+.recharts-wrapper,
+.recharts-wrapper text {
+  font-family: 'Figtree', sans-serif;
+}
+
+.scrollbar-thin::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+.scrollbar-thin::-webkit-scrollbar-thumb {
+  background: #d4d6da;
+  border-radius: 3px;
+}

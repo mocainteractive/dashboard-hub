@@ -1,0 +1,23 @@
+# Configurazione Netlify per un'app integrata Moca Hub.
+[build]
+  command = "npm run build"
+  publish = "dist"
+  functions = "netlify/functions"
+
+[build.environment]
+  # URL dell'Hub usato dall'SDK per validare i launch token.
+  VITE_MOCA_HUB_URL = "https://moca-central-hub.netlify.app"
+
+# Alias comodo: /api/* → funzioni Netlify dell'app.
+# Deve stare PRIMA del fallback SPA: Netlify applica la prima regola che
+# corrisponde, altrimenti /api/* riceverebbe index.html.
+[[redirects]]
+  from = "/api/*"
+  to = "/.netlify/functions/:splat"
+  status = 200
+
+# SPA fallback: tutte le route servono index.html.
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200

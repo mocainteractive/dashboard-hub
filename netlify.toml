@@ -1,0 +1,32 @@
+# Configurazione Netlify di Dashboard Hub (app integrata Moca Hub).
+[build]
+  command = "npm run build"
+  publish = "dist"
+  functions = "netlify/functions"
+
+[build.environment]
+  # URL dell'Hub usato dall'SDK e da start-session per validare i launch token.
+  VITE_MOCA_HUB_URL = "https://moca-central-hub.netlify.app"
+
+[functions]
+  node_bundler = "esbuild"
+
+# Intestazioni di sicurezza per tutte le pagine.
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Frame-Options = "DENY"
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+
+# Alias /api/* -> funzioni dell'app. Deve stare PRIMA del fallback SPA.
+[[redirects]]
+  from = "/api/*"
+  to = "/.netlify/functions/:splat"
+  status = 200
+
+# SPA fallback.
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
