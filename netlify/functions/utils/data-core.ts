@@ -14,6 +14,8 @@ import type {
   VizSpec,
 } from '../../../src/shared/types';
 import { fail, ok } from './http';
+import { McpGateway } from './mcp-gateway';
+import { datasetForPeriod, PeriodError, validPeriod } from './period';
 import { serverFor } from './mcp-client';
 import { INTERNAL_ROLES, type AppSession } from './session';
 import { newId, readIndex, removeFromIndex, upsertIndex, validId, type BlobStore, type TenantStore } from './tenant-store';
@@ -24,7 +26,7 @@ import { newId, readIndex, removeFromIndex, upsertIndex, validId, type BlobStore
  * arriva mai dal body della richiesta.
  */
 
-export type DataBody = { action?: string; id?: unknown; dashboard?: unknown; after?: unknown };
+export type DataBody = { action?: string; id?: unknown; dashboard?: unknown; after?: unknown; dateFrom?: unknown; dateTo?: unknown };
 
 const MAX_DASHBOARD_BYTES = 400_000;
 const VIZ_TYPES = ['kpi', 'line', 'area', 'bar', 'hbar', 'stacked', 'pie', 'table', 'scatter'];
@@ -101,6 +103,19 @@ export async function handleData(body: DataBody, session: AppSession, ts: Tenant
       if (!ds || !scope || !inScope(scope, ds.accounts)) return fail(404, 'Dataset non trovato');
       return ok({ dataset: ds });
     }
+    case 'datasets.period': {
+      if (!validId(body.id)) return fail(400, 'Identificativo non valido');
+      const ds = await ts.get<Dataset>('dataset', body.id);
+      if (!ds || !scope || !inScope(scope, ds.accounts)) return fail(404, 'Dataset non trovato');
+      try {
+        const { from, to } = validPeriod(body.dateFrom, body.dateTo);
+        return ok({ data: await datasetForPeriod(new McpGateway(ts, rawStore, scope), ds, from, to) });
+      } catch (err) {
+        if (err instanceof PeriodError) return fail(422, err.message);
+        throw err;
+      }
+    }
+
     case 'datasets.delete': {
       if (!validId(body.id)) return fail(400, 'Identificativo non valido');
       const ds = await ts.get<Dataset>('dataset', body.id);

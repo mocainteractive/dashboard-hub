@@ -7,6 +7,7 @@ import type {
   DashboardMeta,
   Dataset,
   DatasetMeta,
+  PeriodData,
   RunEvent,
   RunStatus,
   SessionInfo,
@@ -30,6 +31,8 @@ export interface Api {
   listDatasets(): Promise<DatasetMeta[]>;
   getDataset(id: string): Promise<Dataset>;
   deleteDataset(id: string): Promise<void>;
+  /** Dataset riletto dal server per un altro periodo (stessa chiamata MCP, con cache). */
+  datasetForPeriod(id: string, dateFrom: string, dateTo: string): Promise<PeriodData>;
   listDashboards(): Promise<DashboardMeta[]>;
   getDashboard(id: string): Promise<Dashboard>;
   saveDashboard(d: Partial<Dashboard>): Promise<Dashboard>;
@@ -136,6 +139,7 @@ export function createApi(appSession: string): Api {
     listDatasets: async () => (await data<{ datasets: DatasetMeta[] }>('datasets.list')).datasets,
     getDataset: async (id) => (await data<{ dataset: Dataset }>('datasets.get', { id })).dataset,
     deleteDataset: async (id) => void (await data('datasets.delete', { id })),
+    datasetForPeriod: async (id, dateFrom, dateTo) => (await data<{ data: PeriodData }>('datasets.period', { id, dateFrom, dateTo })).data,
     listDashboards: async () => (await data<{ dashboards: DashboardMeta[] }>('dashboards.list')).dashboards,
     getDashboard: async (id) => (await data<{ dashboard: Dashboard }>('dashboards.get', { id })).dashboard,
     saveDashboard: async (dashboard) => (await data<{ dashboard: Dashboard }>('dashboards.save', { dashboard })).dashboard,

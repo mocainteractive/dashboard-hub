@@ -342,6 +342,9 @@ export function createDemoApi(): Api {
       }
       return { status: done ? 'done' : 'running', events: run.events.slice(after), total: run.events.length, message: run.message ?? null };
     },
+    datasetForPeriod: async () => {
+      throw new Error('Nella demo i dati non si rileggono dai server.');
+    },
     cancelRun: async (runId) => {
       runs.delete(runId);
     },

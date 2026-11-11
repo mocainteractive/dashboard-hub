@@ -100,6 +100,7 @@ describe('assistente', () => {
     const datasetId = msg.datasetIds![0];
     const ds = await env.ts.get<Dataset>('dataset', datasetId);
     expect(ds?.accounts).toEqual(['meta_ads:36311415']);
+    expect(ds?.sourceTable).toBe('campaigns');
     expect(ds?.columns.map((c) => [c.key, c.label])).toEqual([
       ['campaign_name', 'Campagna'],
       ['spend', 'spend'],

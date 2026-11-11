@@ -7,20 +7,21 @@ import { Button, Select } from './ui';
 
 /** Filtri globali della dashboard: periodo e valori di dimensione. */
 
-const iso = (d: Date) => d.toISOString().slice(0, 10);
+/** Data locale AAAA-MM-GG (non UTC: a mezzanotte italiana il giorno è già cambiato). */
+const iso = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 
 function presets(): { key: string; label: string; from?: string; to?: string }[] {
   const now = new Date();
   const today = iso(now);
-  const daysAgo = (n: number) => iso(new Date(now.getTime() - n * 86400000));
-  const y = now.getUTCFullYear();
-  const m = now.getUTCMonth();
+  const daysAgo = (n: number) => iso(new Date(now.getFullYear(), now.getMonth(), now.getDate() - n));
+  const y = now.getFullYear();
+  const m = now.getMonth();
   return [
     { key: '7', label: 'Ultimi 7 giorni', from: daysAgo(6), to: today },
     { key: '30', label: 'Ultimi 30 giorni', from: daysAgo(29), to: today },
     { key: '90', label: 'Ultimi 90 giorni', from: daysAgo(89), to: today },
-    { key: 'mtd', label: 'Mese corrente', from: iso(new Date(Date.UTC(y, m, 1))), to: today },
-    { key: 'lm', label: 'Mese scorso', from: iso(new Date(Date.UTC(y, m - 1, 1))), to: iso(new Date(Date.UTC(y, m, 0))) },
+    { key: 'mtd', label: 'Mese corrente', from: iso(new Date(y, m, 1)), to: today },
+    { key: 'lm', label: 'Mese scorso', from: iso(new Date(y, m - 1, 1)), to: iso(new Date(y, m, 0)) },
     { key: 'ytd', label: 'Anno corrente', from: `${y}-01-01`, to: today },
     { key: 'all', label: 'Tutto il periodo' },
   ];

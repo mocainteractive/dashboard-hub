@@ -1,16 +1,61 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { Check, Copy, LayoutDashboard, Pencil, Plus, Sparkles, Trash2 } from 'lucide-react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import { CalendarCheck, CalendarX, Check, Copy, GripVertical, LayoutDashboard, MoveHorizontal, Pencil, Plus, Sparkles, Trash2 } from 'lucide-react';
+import { closestCenter, DndContext, KeyboardSensor, PointerSensor, TouchSensor, useSensor, useSensors, type DragEndEvent } from '@dnd-kit/core';
+import { arrayMove, rectSortingStrategy, SortableContext, sortableKeyboardCoordinates, useSortable } from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
 import { FilterBar } from '../components/FilterBar';
 import { VizCard } from '../components/VizCard';
 import { WidgetEditor } from '../components/WidgetEditor';
 import { Button, EmptyState, ErrorNote, IconButton, Input, Spinner } from '../components/ui';
 import { useData } from '../lib/DataContext';
 import { formatDateTime, newLocalId } from '../lib/format';
-import type { Cell, Dashboard, DashboardWidget } from '../shared/types';
+import type { Cell, Dashboard, DashboardWidget, PeriodStatus } from '../shared/types';
 
 /** Dashboard del cliente: elenco, filtri globali, griglia di widget, editor. */
 
 const SPAN: Record<1 | 2 | 3, string> = { 1: 'lg:col-span-1', 2: 'lg:col-span-2', 3: 'lg:col-span-3' };
+const NEXT_W: Record<1 | 2 | 3, 1 | 2 | 3> = { 1: 2, 2: 3, 3: 1 };
+const W_LABEL: Record<1 | 2 | 3, string> = { 1: 'un terzo', 2: 'due terzi', 3: 'tutta la riga' };
+
+type HandleProps = Record<string, unknown>;
+
+/** Widget trascinabile: si sposta con la maniglia, così il clic sul grafico resta un filtro. */
+function SortableWidget({ id, className, children }: { id: string; className: string; children: (handle: HandleProps, dragging: boolean) => ReactNode }) {
+  const { attributes, listeners, setNodeRef, setActivatorNodeRef, transform, transition, isDragging } = useSortable({ id });
+  return (
+    <div
+      ref={setNodeRef}
+      className={`${className} min-w-0 ${isDragging ? 'relative z-20 opacity-80 ring-2 ring-moca-red rounded-xl' : ''}`}
+      style={{ transform: CSS.Translate.toString(transform), transition }}
+    >
+      {children({ ...attributes, ...listeners, ref: setActivatorNodeRef }, isDragging)}
+    </div>
+  );
+}
+
+/** Riepilogo: a quanti widget è applicato il periodo scelto. */
+function PeriodSummary({ statuses, titles }: { statuses: Record<string, PeriodStatus | null>; titles: Record<string, string> }) {
+  const entries = Object.entries(statuses);
+  if (!entries.length || entries.some(([, s]) => s === null)) return null;
+  if (entries.every(([, s]) => s?.kind === 'none')) return null;
+  const fixed = entries.filter(([, s]) => s?.kind === 'fixed');
+  const applied = entries.length - fixed.length;
+  if (!fixed.length) {
+    return (
+      <p className="flex items-center gap-1.5 text-xs text-chart-green -mt-3 mb-4">
+        <CalendarCheck size={14} /> Periodo applicato a tutti i {entries.length} widget.
+      </p>
+    );
+  }
+  return (
+    <p className="flex items-start gap-1.5 text-xs text-amber-700 -mt-3 mb-4">
+      <CalendarX size={14} className="shrink-0 mt-px" />
+      <span>
+        Periodo applicato a {applied} widget su {entries.length}. Non applicato a: {fixed.map(([id]) => titles[id] ?? 'widget').join(', ')}.
+      </span>
+    </p>
+  );
+}
 
 export function DashboardsView({ openId, onOpen, onGoChat }: { openId: string | null; onOpen: (id: string | null) => void; onGoChat: () => void }) {
   const { api, dashboards, refreshDashboards, datasets } = useData();
@@ -20,7 +65,13 @@ export function DashboardsView({ openId, onOpen, onGoChat }: { openId: string | 
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved'>('idle');
   const [editing, setEditing] = useState<DashboardWidget | 'new' | null>(null);
   const [renaming, setRenaming] = useState(false);
+  const [periods, setPeriods] = useState<Record<string, PeriodStatus | null>>({});
   const saveTimer = useRef<number>();
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
+    useSensor(TouchSensor, { activationConstraint: { delay: 150, tolerance: 6 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  );
 
   const selectedId = openId ?? dashboards[0]?.id ?? null;
 
@@ -85,6 +136,22 @@ export function DashboardsView({ openId, onOpen, onGoChat }: { openId: string | 
     const already = current.filters.dims.some((f) => f.column === column && f.value === value);
     persist({ ...current, filters: { ...current.filters, dims: already ? dims : [...dims, { column, op: 'eq', value }] } });
   };
+
+  const onDragEnd = (e: DragEndEvent) => {
+    if (!current || !e.over || e.active.id === e.over.id) return;
+    const from = current.widgets.findIndex((w) => w.id === e.active.id);
+    const to = current.widgets.findIndex((w) => w.id === e.over!.id);
+    if (from < 0 || to < 0) return;
+    persist({ ...current, widgets: arrayMove(current.widgets, from, to) });
+  };
+
+  // Stati del periodo solo per i widget presenti (dopo una rimozione o un cambio di dashboard).
+  const widgetIds = current?.widgets.map((w) => w.id).join(',') ?? '';
+  useEffect(() => {
+    const ids = new Set(widgetIds.split(',').filter(Boolean));
+    setPeriods((p) => Object.fromEntries(Object.entries(p).filter(([id]) => ids.has(id))));
+  }, [widgetIds]);
+  const reportPeriod = useCallback((id: string, s: PeriodStatus | null) => setPeriods((p) => (p[id] === s ? p : { ...p, [id]: s })), []);
 
   const upsertWidget = (w: DashboardWidget) => {
     if (!current) return;
@@ -185,6 +252,7 @@ export function DashboardsView({ openId, onOpen, onGoChat }: { openId: string | 
             </div>
 
             <FilterBar value={current.filters} onChange={(filters) => persist({ ...current, filters })} datasetIds={[...new Set(current.widgets.flatMap((w) => [w.spec.datasetId, w.spec.join?.datasetId ?? '']))]} />
+            <PeriodSummary statuses={periods} titles={Object.fromEntries(current.widgets.map((w) => [w.id, w.spec.title]))} />
 
             {!current.widgets.length ? (
               <div className="bg-white rounded-xl shadow-card">
@@ -206,31 +274,51 @@ export function DashboardsView({ openId, onOpen, onGoChat }: { openId: string | 
                 />
               </div>
             ) : (
-              <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
-                {current.widgets.map((w) => (
-                  <VizCard
-                    key={w.id}
-                    spec={w.spec}
-                    filters={current.filters}
-                    className={SPAN[w.w]}
-                    height={w.w === 1 ? 220 : 260}
-                    onCrossFilter={crossFilter}
-                    actions={
-                      <>
-                        <IconButton label="Modifica" onClick={() => setEditing(w)}>
-                          <Pencil size={16} />
-                        </IconButton>
-                        <IconButton label="Duplica" onClick={() => persist({ ...current, widgets: [...current.widgets, { ...w, id: newLocalId(), spec: { ...w.spec, id: newLocalId(), title: `${w.spec.title} (copia)` } }] })}>
-                          <Copy size={16} />
-                        </IconButton>
-                        <IconButton label="Rimuovi" onClick={() => persist({ ...current, widgets: current.widgets.filter((x) => x.id !== w.id) })}>
-                          <Trash2 size={16} />
-                        </IconButton>
-                      </>
-                    }
-                  />
-                ))}
-              </div>
+              <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd}>
+                <SortableContext items={current.widgets.map((w) => w.id)} strategy={rectSortingStrategy}>
+                  <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
+                    {current.widgets.map((w) => (
+                      <SortableWidget key={w.id} id={w.id} className={SPAN[w.w]}>
+                        {(handle) => (
+                          <VizCard
+                            spec={w.spec}
+                            filters={current.filters}
+                            className="h-full"
+                            height={w.w === 1 ? 220 : 260}
+                            onCrossFilter={crossFilter}
+                            onPeriodStatus={(st) => reportPeriod(w.id, st)}
+                            actions={
+                              <>
+                                <button
+                                  type="button"
+                                  {...handle}
+                                  aria-label="Sposta il widget"
+                                  title="Trascina per spostare"
+                                  className="p-1.5 rounded-md text-moca-gray hover:text-moca-black hover:bg-gray-100 cursor-grab active:cursor-grabbing touch-none"
+                                >
+                                  <GripVertical size={16} />
+                                </button>
+                                <IconButton label={`Larghezza: ${W_LABEL[w.w]}`} className="hidden lg:inline-flex" onClick={() => persist({ ...current, widgets: current.widgets.map((x) => (x.id === w.id ? { ...x, w: NEXT_W[x.w] } : x)) })}>
+                                  <MoveHorizontal size={16} />
+                                </IconButton>
+                                <IconButton label="Modifica" onClick={() => setEditing(w)}>
+                                  <Pencil size={16} />
+                                </IconButton>
+                                <IconButton label="Duplica" onClick={() => persist({ ...current, widgets: [...current.widgets, { ...w, id: newLocalId(), spec: { ...w.spec, id: newLocalId(), title: `${w.spec.title} (copia)` } }] })}>
+                                  <Copy size={16} />
+                                </IconButton>
+                                <IconButton label="Rimuovi" onClick={() => persist({ ...current, widgets: current.widgets.filter((x) => x.id !== w.id) })}>
+                                  <Trash2 size={16} />
+                                </IconButton>
+                              </>
+                            }
+                          />
+                        )}
+                      </SortableWidget>
+                    ))}
+                  </div>
+                </SortableContext>
+              </DndContext>
             )}
           </>
         )}

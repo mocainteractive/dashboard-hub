@@ -98,7 +98,34 @@ export interface DatasetMeta {
   createdAt: string;
   createdBy: string;
   updatedAt: string;
+  /**
+   * Tabella della risposta MCP da cui è stato estratto (solo dataset creati
+   * dal server, non scritti dal modello): permette di rileggerlo per un altro
+   * periodo con la stessa chiamata.
+   */
+  sourceTable?: string;
 }
+
+/** Dati di un dataset riletti per il periodo della dashboard. */
+export interface PeriodData {
+  columns: Column[];
+  rows: Row[];
+  dateFrom: string;
+  dateTo: string;
+  fetchedAt: string;
+  fromCache: boolean;
+}
+
+/** Come il periodo della dashboard è applicato a un widget. */
+export type PeriodStatus =
+  /** Nessun periodo selezionato. */
+  | { kind: 'none' }
+  /** Filtrato sulle righe già presenti (il dataset copre il periodo). */
+  | { kind: 'filtered' }
+  /** Dati riletti dal server per il periodo scelto. */
+  | { kind: 'refetched'; fetchedAt: string }
+  /** Non applicabile: dati di un periodo fisso. */
+  | { kind: 'fixed'; dateFrom?: string; dateTo?: string; reason: string };
 
 export interface Dataset extends DatasetMeta {
   rows: Row[];

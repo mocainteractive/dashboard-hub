@@ -433,6 +433,7 @@ export class AgentRunner {
       columns,
       rows,
       sourceCalls: [staged.call],
+      sourceTable: table.label,
     });
     staged.datasetId = ds.id;
     return ds;
