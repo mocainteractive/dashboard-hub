@@ -85,7 +85,16 @@ export interface GatewayDeps {
   call?: (server: McpServer, name: string, args: Record<string, unknown>) => Promise<string>;
   server?: (p: McpPlatform) => McpServer | null;
   tools?: (p: McpPlatform) => Promise<McpToolDef[]>;
+  /** Tempo massimo di ogni chiamata MCP (funzioni sincrone di Netlify: circa 10 secondi in tutto). */
+  timeoutMs?: number;
 }
+
+/**
+ * Limite per le chiamate fatte dalle funzioni sincrone: online la funzione si
+ * interrompe dopo circa 10 secondi. Nel POC locale e nelle background
+ * function non serve.
+ */
+export const syncCallTimeout = (): number | undefined => (process.env.CHAT_STREAMING === 'true' ? undefined : 8000);
 
 export class McpGateway {
   private policyCache = new Map<McpPlatform, ToolPolicy[]>();
@@ -103,7 +112,7 @@ export class McpGateway {
     deps: GatewayDeps = {},
   ) {
     this.now = deps.now ?? (() => new Date());
-    this.call = deps.call ?? ((s, n, a) => callTool(s, n, a));
+    this.call = deps.call ?? ((s, n, a) => callTool(s, n, a, deps.timeoutMs));
     this.server = deps.server ?? serverFor;
     this.tools = deps.tools ?? ((p) => cachedTools(globalStore, p));
   }

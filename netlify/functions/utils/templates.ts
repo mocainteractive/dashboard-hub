@@ -368,6 +368,11 @@ export async function createDefaultDashboard(o: {
       );
     }
   }
+  // L'incrocio query × conversioni parte insieme alle altre chiamate (online il tempo è limitato).
+  const crossP =
+    platforms.includes('ga4') && platforms.includes('search_console')
+      ? buildQueryConversions({ ts, session, scope, gateway, from, to, now }).catch((e: Error) => ({ error: e.message }))
+      : null;
   const built = await Promise.all(jobs);
 
   const widgets: DashboardWidget[] = [];
@@ -410,8 +415,8 @@ export async function createDefaultDashboard(o: {
   }
 
   // Incrocio Search Console × GA4: query e conversioni stimate dalla landing page organica.
-  if (platforms.includes('ga4') && platforms.includes('search_console')) {
-    const cross = await buildQueryConversions({ ts, session, scope, gateway, from, to, now }).catch((e: Error) => ({ error: e.message }));
+  if (crossP) {
+    const cross = await crossP;
     if ('error' in cross) report.push({ platform: 'search_console', title: 'Query × conversioni', ok: false, reason: cross.error, widgets: 0 });
     else {
       placer.newRow();

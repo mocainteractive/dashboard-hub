@@ -89,7 +89,7 @@ async function rpc(server: McpServer, method: string, params: Record<string, unk
   return msg.result ?? {};
 }
 
-export async function callTool(server: McpServer, name: string, args: Record<string, unknown>, timeoutMs = 25000): Promise<string> {
+export async function callTool(server: McpServer, name: string, args: Record<string, unknown>, timeoutMs: number = 25000): Promise<string> {
   const result = (await rpc(server, 'tools/call', { name, arguments: args }, timeoutMs)) as {
     content?: { type?: string; text?: string }[];
     isError?: boolean;
