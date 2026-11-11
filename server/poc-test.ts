@@ -9,15 +9,18 @@
  * ripetuta (cache), e scrive un report con esiti, tempi, token e costi in
  * .poc-data/report-<data>.md. Usa Claude e i server MCP veri: ha un costo.
  *
- * Opzioni: POC_URL (predefinito http://localhost:5180), POC_TEST_ONLY=dashboard|chat
+ * Opzioni: POC_URL (predefinito http://localhost:5180), POC_TEST_ONLY=dashboard|chat,
+ * POC_TEST_TIERS=fast,balanced,deep per confrontare le modalità (predefinito balanced).
  */
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import type { ChatMessage, Dashboard, Dataset, McpPlatform, PeriodData, SessionInfo, StreamEvent } from '../src/shared/types';
-import { PLATFORM_LABELS } from '../src/shared/types';
+import type { AiTier, ChatMessage, Dashboard, Dataset, McpPlatform, PeriodData, SessionInfo, StreamEvent } from '../src/shared/types';
+import { AI_TIERS, PLATFORM_LABELS, TIER_LABELS } from '../src/shared/types';
 
 const BASE = (process.env.POC_URL || 'http://localhost:5180').replace(/\/$/, '');
 const ONLY = process.env.POC_TEST_ONLY;
+const TIERS = (process.env.POC_TEST_TIERS || 'balanced').split(',').map((t) => t.trim()).filter((t): t is AiTier => AI_TIERS.includes(t as AiTier));
+let tier: AiTier = 'balanced';
 const ROOT = resolve(import.meta.dirname, '..');
 
 let token = '';
@@ -100,17 +103,18 @@ interface ChatRun {
   steps: number;
   tokens: string;
   answer: string;
+  model: string;
 }
 
 async function ask(question: string, conversationId?: string): Promise<{ run: ChatRun; message: ChatMessage | null; conversationId?: string }> {
   const t0 = Date.now();
-  const run: ChatRun = { question, ok: false, seconds: 0, mcp: 0, cache: 0, blocked: 0, errors: [], vizs: 0, datasets: [], costUsd: 0, steps: 0, tokens: '', answer: '' };
+  const run: ChatRun = { question, ok: false, seconds: 0, mcp: 0, cache: 0, blocked: 0, errors: [], vizs: 0, datasets: [], costUsd: 0, steps: 0, tokens: '', answer: '', model: '' };
   let message: ChatMessage | null = null;
   let conv = conversationId;
   const res = await fetch(`${BASE}/api/chat-stream`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-    body: JSON.stringify({ message: question, conversation_id: conversationId }),
+    body: JSON.stringify({ message: question, conversation_id: conversationId, tier }),
     signal: AbortSignal.timeout(10 * 60 * 1000),
   });
   if (!res.ok || !res.body) {
@@ -151,6 +155,7 @@ async function ask(question: string, conversationId?: string): Promise<{ run: Ch
     run.datasets = message.datasetIds ?? [];
     if (message.usage) {
       run.costUsd = message.usage.costUsd;
+      run.model = message.usage.model;
       run.steps = message.usage.steps;
       const u = message.usage;
       run.tokens = `ingresso ${u.input} + cache letta ${u.cacheRead} + cache scritta ${u.cacheWrite}, uscita ${u.output}`;
@@ -174,6 +179,9 @@ function questions(info: SessionInfo, client: string): { q: string; platforms: M
   if (has('meta_ads')) list.push({ q: 'Quali campagne Meta hanno speso di più negli ultimi 30 giorni e con che risultati?', platforms: ['meta_ads'] });
   if (has('google_ads')) list.push({ q: 'Costo e conversioni di Google Ads per campagna negli ultimi 30 giorni.', platforms: ['google_ads'] });
   if (has('pinterest_ads')) list.push({ q: 'Andamento della spesa Pinterest negli ultimi 30 giorni.', platforms: ['pinterest_ads'] });
+  if (has('ga4') && has('search_console')) {
+    list.push({ q: 'Quali query di Search Console portano più conversioni? Incrocia le query per pagina con le landing page organiche di GA4 e calcola le conversioni stimate per query negli ultimi 30 giorni.', platforms: ['search_console', 'ga4'] });
+  }
   if (has('ga4') && (has('meta_ads') || has('google_ads'))) {
     list.push({ q: `Confronta le sessioni GA4 con la spesa ${has('meta_ads') ? 'Meta' : 'Google Ads'} giorno per giorno negli ultimi 30 giorni.`, platforms: ['ga4'] });
   }
@@ -181,8 +189,11 @@ function questions(info: SessionInfo, client: string): { q: string; platforms: M
   return list;
 }
 
+const tierSummary: { tier: AiTier; model: string; answers: number; ok: number; checksOk: number; checks: number; avgSeconds: number; avgCost: number }[] = [];
+
 async function testChat(info: SessionInfo, client: string) {
-  out('\n## CHAT CON I DATI\n');
+  out(`\n## CHAT CON I DATI, MODALITÀ ${TIER_LABELS[tier].label.toUpperCase()} (${TIER_LABELS[tier].model})\n`);
+  const checksBefore = results.length;
   const runs: ChatRun[] = [];
   const qs = questions(info, client);
   for (const { q } of qs) {
@@ -235,6 +246,17 @@ async function testChat(info: SessionInfo, client: string) {
     out(`  tempo medio ${(sec.reduce((a, b) => a + b, 0) / sec.length).toFixed(1)} s, mediana ${sec[Math.floor(sec.length / 2)].toFixed(1)} s, massimo ${sec[sec.length - 1].toFixed(1)} s`);
     out(`  costo totale ${cost.toFixed(4)} $, medio ${(cost / done.length).toFixed(4)} $ per risposta`);
   }
+  const mine = results.slice(checksBefore);
+  tierSummary.push({
+    tier,
+    model: runs.find((r) => r.model)?.model ?? '?',
+    answers: runs.length,
+    ok: done.length,
+    checksOk: mine.filter((r) => r.ok).length,
+    checks: mine.length,
+    avgSeconds: done.length ? done.reduce((a, r) => a + r.seconds, 0) / done.length : 0,
+    avgCost: done.length ? cost / done.length : 0,
+  });
 }
 
 async function main() {
@@ -258,7 +280,20 @@ async function main() {
   check('base', 'Chat in streaming', !!info.streaming);
 
   if (ONLY !== 'chat') await testDashboard();
-  if (ONLY !== 'dashboard' && info.providers.length) await testChat(info, client);
+  if (ONLY !== 'dashboard' && info.providers.length) {
+    for (const t of TIERS) {
+      tier = t;
+      await testChat(info, client);
+    }
+  }
+  if (tierSummary.length > 1) {
+    out('\n## CONFRONTO TRA MODALITÀ\n');
+    out('| Modalità | Modello | Risposte ok | Controlli ok | Tempo medio | Costo medio |');
+    out('|---|---|---|---|---|---|');
+    for (const t of tierSummary) {
+      out(`| ${TIER_LABELS[t.tier].label} | ${t.model} | ${t.ok}/${t.answers} | ${t.checksOk}/${t.checks} | ${t.avgSeconds.toFixed(1)} s | ${t.avgCost.toFixed(4)} $ |`);
+    }
+  }
 
   const bad = results.filter((r) => !r.ok);
   out('\n## RIEPILOGO\n');

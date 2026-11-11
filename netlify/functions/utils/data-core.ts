@@ -67,14 +67,41 @@ function cleanSpec(v: unknown, known: Set<string>): VizSpec | null {
   if (!VIZ_TYPES.includes(s.type as string)) return null;
   const metrics = Array.isArray(s.metrics) ? s.metrics.filter((m): m is string => typeof m === 'string').slice(0, 6) : [];
   if (!metrics.length) return null;
-  const join = s.join as { datasetId?: unknown; on?: unknown } | undefined;
-  const validJoin = join && validId(join.datasetId) && known.has(join.datasetId as string) && Array.isArray(join.on);
+  const join = s.join as { datasetId?: unknown; on?: unknown; pairs?: unknown; mode?: unknown } | undefined;
+  const validJoin = join && validId(join.datasetId) && known.has(join.datasetId as string) && (Array.isArray(join.on) || Array.isArray(join.pairs));
+  const pairs = validJoin && Array.isArray(join!.pairs)
+    ? (join!.pairs as Record<string, unknown>[])
+        .filter((p) => p && typeof p.a === 'string' && typeof p.b === 'string')
+        .slice(0, 3)
+        .map((p) => ({ a: String(p.a).slice(0, 60), b: String(p.b).slice(0, 60) }))
+    : [];
+  const computed = Array.isArray(s.computed)
+    ? (s.computed as Record<string, unknown>[])
+        .filter((c) => c && typeof c.key === 'string' && typeof c.expr === 'string')
+        .slice(0, 8)
+        .map((c) => ({
+          key: String(c.key).toLowerCase().replace(/[^a-z0-9_]/g, '_').slice(0, 40),
+          label: String(c.label ?? c.key).slice(0, 80),
+          expr: String(c.expr).slice(0, 300),
+          ...(typeof c.format === 'string' && ['number', 'decimal', 'currency', 'percent', 'duration'].includes(c.format) ? { format: c.format as 'number' } : {}),
+        }))
+    : [];
   return {
     id: validId(s.id) ? (s.id as string) : newId(),
     title: String(s.title ?? '').slice(0, 120) || 'Grafico',
     type: s.type as VizSpec['type'],
     datasetId: s.datasetId as string,
-    ...(validJoin ? { join: { datasetId: join!.datasetId as string, on: (join!.on as unknown[]).filter((k): k is string => typeof k === 'string').slice(0, 3) } } : {}),
+    ...(validJoin
+      ? {
+          join: {
+            datasetId: join!.datasetId as string,
+            on: (Array.isArray(join!.on) ? (join!.on as unknown[]) : []).filter((k): k is string => typeof k === 'string').slice(0, 3),
+            ...(pairs.length ? { pairs } : {}),
+            ...(join!.mode === 'lookup' || join!.mode === 'merge' ? { mode: join!.mode as 'lookup' } : {}),
+          },
+        }
+      : {}),
+    ...(computed.length ? { computed } : {}),
     ...(typeof s.x === 'string' ? { x: s.x.slice(0, 60) } : {}),
     metrics,
     ...(typeof s.seriesBy === 'string' ? { seriesBy: s.seriesBy.slice(0, 60) } : {}),

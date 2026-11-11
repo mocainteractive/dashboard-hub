@@ -1,4 +1,4 @@
-import type { ChatMessage, Conversation, RunState, StreamEvent } from '../../../src/shared/types';
+import { AI_TIERS, type AiTier, type ChatMessage, type Conversation, type RunState, type StreamEvent } from '../../../src/shared/types';
 import { AgentRunner, conversationMeta } from './agent';
 import { LlmError, type Effort } from './llm';
 import type { McpGateway } from './mcp-gateway';
@@ -71,7 +71,11 @@ export interface RunTurnOptions {
   emit?: (e: StreamEvent) => void;
   signal?: AbortSignal;
   isCancelled?: () => Promise<boolean>;
+  tier?: AiTier;
 }
+
+/** Modalità della chat dal body della richiesta (valori ammessi, altrimenti la predefinita). */
+export const parseTier = (v: unknown): AiTier | undefined => (AI_TIERS.includes(v as AiTier) ? (v as AiTier) : undefined);
 
 /** Esegue l'assistente e salva la risposta nella conversazione. */
 export async function runTurn(o: RunTurnOptions): Promise<ChatMessage> {
@@ -96,6 +100,7 @@ export async function runTurn(o: RunTurnOptions): Promise<ChatMessage> {
       signal: o.signal,
       isCancelled: o.isCancelled,
       effort: o.session.effort as Effort | undefined,
+      tier: o.tier,
     });
     message = await runner.run('anthropic');
     run.status = 'done';

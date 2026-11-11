@@ -2,7 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { createApi, type Api } from './api';
 import { createDemoApi } from './demo';
 import { useMoca } from './MocaProvider';
-import { dateColumn, joinTables, type Table } from '../shared/engine';
+import { addComputed, dateColumn, joinKeysOf, joinTables, type Table } from '../shared/engine';
 import type { DashboardFilters, DashboardMeta, Dataset, DatasetMeta, McpPlatform, PeriodData, PeriodStatus, VizSpec } from '../shared/types';
 
 /**
@@ -186,13 +186,15 @@ function combine(a: PeriodStatus, b: PeriodStatus): PeriodStatus {
 
 /** Tabella sorgente di una visualizzazione (con l'eventuale incrocio), per il periodo della dashboard. */
 export function useVizTable(
-  spec: Pick<VizSpec, 'datasetId' | 'join'>,
+  spec: Pick<VizSpec, 'datasetId' | 'join' | 'computed'>,
   filters?: DashboardFilters,
 ): VizState {
   const { loadDataset, loadPeriod, datasetsVersion } = useData();
   const [state, setState] = useState<VizState>({ table: null, title: '', loading: true, error: null, period: { kind: 'none' }, platforms: [] });
   const joinId = spec.join?.datasetId;
-  const joinOn = spec.join?.on.join(',');
+  // Chiave stabile dell'incrocio e delle metriche calcolate (per rifare il calcolo solo se cambiano).
+  const joinKey = spec.join ? JSON.stringify({ k: joinKeysOf(spec.join), m: spec.join.mode ?? 'merge' }) : '';
+  const computedKey = spec.computed?.length ? JSON.stringify(spec.computed) : '';
   const from = filters?.dateFrom;
   const to = filters?.dateTo;
 
@@ -203,11 +205,14 @@ export function useVizTable(
     (async () => {
       const dsA = await loadDataset(spec.datasetId);
       const a = await resolveForPeriod(dsA, period, loadPeriod);
-      if (!joinId || !joinOn) return { table: a.table, title: a.title, period: a.status, platforms: dsA.platforms };
+      const computed = computedKey ? (JSON.parse(computedKey) as NonNullable<VizSpec['computed']>) : [];
+      if (!joinId || !joinKey) return { table: addComputed(a.table, computed), title: a.title, period: a.status, platforms: dsA.platforms };
       const dsB = await loadDataset(joinId);
       const b = await resolveForPeriod(dsB, period, loadPeriod);
+      const { k, m } = JSON.parse(joinKey) as { k: { a: string; b: string }[]; m: 'merge' | 'lookup' };
+      const joined = joinTables(a.table, b.table, k, { a: a.title.split(',')[0], b: b.title.split(',')[0] }, m);
       return {
-        table: joinTables(a.table, b.table, (joinOn ?? '').split(',').filter(Boolean), { a: a.title.split(',')[0], b: b.title.split(',')[0] }),
+        table: addComputed(joined, computed),
         title: `${a.title} + ${b.title}`,
         period: combine(a.status, b.status),
         platforms: [...new Set([...dsA.platforms, ...dsB.platforms])],
@@ -218,7 +223,7 @@ export function useVizTable(
     return () => {
       alive = false;
     };
-  }, [spec.datasetId, joinId, joinOn, from, to, loadDataset, loadPeriod, datasetsVersion]);
+  }, [spec.datasetId, joinId, joinKey, computedKey, from, to, loadDataset, loadPeriod, datasetsVersion]);
 
   return state;
 }

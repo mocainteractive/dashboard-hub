@@ -8,7 +8,7 @@ import { useData } from '../lib/DataContext';
 import { useMoca } from '../lib/MocaProvider';
 import { formatDateTime, newLocalId } from '../lib/format';
 import { formatUsd } from '../shared/pricing';
-import { PROVIDER_LABELS, type ChatMessage, type Conversation, type ConversationMeta, type RunEvent, type StreamEvent, type VizSpec } from '../shared/types';
+import { AI_TIERS, TIER_LABELS, type AiTier, PROVIDER_LABELS, type ChatMessage, type Conversation, type ConversationMeta, type RunEvent, type StreamEvent, type VizSpec } from '../shared/types';
 
 /** Chat con i dati: storico, avanzamento in tempo reale, grafici nella risposta. */
 
@@ -62,6 +62,15 @@ function Events({ events, live }: { events: RunEvent[]; live?: boolean }) {
   );
 }
 
+/** "claude-sonnet-5-5" -> "Claude Sonnet 5.5". */
+const modelName = (id: string) =>
+  id
+    .replace(/^claude-/, '')
+    .split('-')
+    .map((p, i) => (i === 0 ? `Claude ${p[0].toUpperCase()}${p.slice(1)}` : p))
+    .join(' ')
+    .replace(/ (\d+) (\d+)$/, ' $1.$2');
+
 function Message({ m, onAdd }: { m: ChatMessage; onAdd: (v: VizSpec) => void }) {
   if (m.role === 'user') {
     return (
@@ -88,7 +97,7 @@ function Message({ m, onAdd }: { m: ChatMessage; onAdd: (v: VizSpec) => void }) 
             className="text-[10px] text-moca-gray mt-2"
             title={m.usage ? `${m.usage.model} · ${m.usage.steps} passaggi · ingresso ${m.usage.input.toLocaleString('it-IT')} · cache letta ${m.usage.cacheRead.toLocaleString('it-IT')} · cache scritta ${m.usage.cacheWrite.toLocaleString('it-IT')} · uscita ${m.usage.output.toLocaleString('it-IT')} token` : undefined}
           >
-            {m.provider ? PROVIDER_LABELS[m.provider] : 'Assistente'} · {formatDateTime(m.at)}
+            {m.usage ? modelName(m.usage.model) : m.provider ? PROVIDER_LABELS[m.provider] : 'Assistente'} · {formatDateTime(m.at)}
             {m.durationMs ? ` · ${(m.durationMs / 1000).toLocaleString('it-IT', { maximumFractionDigits: 1 })} s` : ''}
             {m.usage ? ` · costo stimato ${formatUsd(m.usage.costUsd)}` : ''}
           </p>
@@ -130,6 +139,22 @@ export function ChatView({ initialText, onInitialUsed }: { initialText?: string 
   const [conv, setConv] = useState<Conversation | null>(null);
   const [text, setText] = useState('');
   const [refresh, setRefresh] = useState(false);
+  const [tier, setTierState] = useState<AiTier>(() => {
+    try {
+      const t = localStorage.getItem('dashboard-hub-tier') as AiTier | null;
+      return t && AI_TIERS.includes(t) ? t : 'balanced';
+    } catch {
+      return 'balanced';
+    }
+  });
+  const setTier = (t: AiTier) => {
+    setTierState(t);
+    try {
+      localStorage.setItem('dashboard-hub-tier', t);
+    } catch {
+      // Preferenza non salvata: vale fino al ricaricamento.
+    }
+  };
   const [running, setRunning] = useState<Live | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [adding, setAdding] = useState<VizSpec | null>(null);
@@ -257,7 +282,7 @@ export function ChatView({ initialText, onInitialUsed }: { initialText?: string 
       const abort = new AbortController();
       setRunning({ events: [], text: '', vizs: [], abort });
       try {
-        await api.chatStream({ conversationId: conv?.id, message: q, refresh }, onStreamEvent(q), abort.signal);
+        await api.chatStream({ conversationId: conv?.id, message: q, refresh, tier }, onStreamEvent(q), abort.signal);
       } catch (e) {
         setError((e as Error).message);
         setText(q);
@@ -268,7 +293,7 @@ export function ChatView({ initialText, onInitialUsed }: { initialText?: string 
       return;
     }
     try {
-      const { runId, conversationId } = await api.chatStart({ conversationId: conv?.id, message: q, refresh });
+      const { runId, conversationId } = await api.chatStart({ conversationId: conv?.id, message: q, refresh, tier });
       addUserMessage(conversationId, q);
       setRunning({ runId, conversationId, events: [], text: '', vizs: [] });
     } catch (e) {
@@ -404,10 +429,27 @@ export function ChatView({ initialText, onInitialUsed }: { initialText?: string 
               className="!border-0 !ring-0 !px-1 resize-none"
             />
             <div className="flex flex-wrap items-center justify-between gap-2 mt-2">
-              <label className="flex items-center gap-1.5 text-xs text-moca-text cursor-pointer select-none" title="Ignora la cache e rilegge i dati dai server">
-                <input type="checkbox" checked={refresh} onChange={(e) => setRefresh(e.target.checked)} className="accent-moca-red" />
-                <RefreshCw size={12} /> Rileggi i dati dai server
-              </label>
+              <div className="flex flex-wrap items-center gap-3">
+                <div className="inline-flex rounded-md border border-moca-line p-0.5" role="radiogroup" aria-label="Modalità">
+                  {AI_TIERS.map((t) => (
+                    <button
+                      key={t}
+                      type="button"
+                      role="radio"
+                      aria-checked={tier === t}
+                      title={`${TIER_LABELS[t].model}: ${TIER_LABELS[t].hint}`}
+                      onClick={() => setTier(t)}
+                      className={`px-2.5 py-1 text-xs rounded transition ${tier === t ? 'bg-moca-black text-white' : 'text-moca-text hover:text-moca-black'}`}
+                    >
+                      {TIER_LABELS[t].label}
+                    </button>
+                  ))}
+                </div>
+                <label className="flex items-center gap-1.5 text-xs text-moca-text cursor-pointer select-none" title="Ignora la cache e rilegge i dati dai server">
+                  <input type="checkbox" checked={refresh} onChange={(e) => setRefresh(e.target.checked)} className="accent-moca-red" />
+                  <RefreshCw size={12} /> Rileggi i dati dai server
+                </label>
+              </div>
               {running ? (
                 <Button variant="secondary" onClick={stop}>
                   <Square size={14} /> Interrompi

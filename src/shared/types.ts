@@ -58,6 +58,15 @@ export const PROVIDER_LABELS: Record<AiProvider, string> = {
   anthropic: 'Claude',
 };
 
+/** Modalità della chat: modello e costo crescenti. */
+export type AiTier = 'fast' | 'balanced' | 'deep';
+export const AI_TIERS: AiTier[] = ['fast', 'balanced', 'deep'];
+export const TIER_LABELS: Record<AiTier, { label: string; model: string; hint: string }> = {
+  fast: { label: 'Veloce', model: 'Claude Haiku 5.5', hint: 'Domande semplici su una fonte: costo minimo' },
+  balanced: { label: 'Bilanciata', model: 'Claude Sonnet 5.5', hint: 'Uso quotidiano: buon equilibrio tra qualità e costo' },
+  deep: { label: 'Approfondita', model: 'Claude Opus 5.5', hint: 'Analisi complesse tra più fonti: costo più alto' },
+};
+
 // --- Dataset e visualizzazioni ---
 
 export type ColumnType = 'date' | 'dimension' | 'metric';
@@ -110,6 +119,10 @@ export interface DatasetMeta {
   transform?: QuerySpec;
   /** Colonne rinominate: chiave nel dataset -> colonna d'origine. */
   renames?: Record<string, string>;
+  /** Incrocio con un altro dataset, ripetuto a ogni rilettura per periodo. */
+  join?: { datasetId: string; pairs: JoinKey[]; mode: JoinMode };
+  /** Colonne della tabella d'origine al momento del salvataggio (per ritrovarla nelle riletture). */
+  sourceKeys?: string[];
   /** Sostituito da un dataset rileggibile con le stesse colonne: i grafici usano quello. */
   replacedBy?: string;
 }
@@ -151,6 +164,8 @@ export interface Filter {
 export type DateGrain = 'day' | 'week' | 'month';
 
 export interface QuerySpec {
+  /** Metriche calcolate, applicate prima di filtri e raggruppamenti. */
+  computed?: Computed[];
   filters?: Filter[];
   groupBy?: string[];
   metrics?: { key: string; agg?: Agg }[];
@@ -159,10 +174,35 @@ export interface QuerySpec {
   dateGrain?: DateGrain;
 }
 
+/** Coppia di colonne da far corrispondere: a nel primo dataset, b nel secondo. */
+export interface JoinKey {
+  a: string;
+  b: string;
+}
+
+/**
+ * merge: unisce le righe per valore comune (es. data), sommando i due lati.
+ * lookup: tiene le righe del primo dataset e aggiunge le metriche del
+ * secondo che corrispondono (es. query GSC + conversioni GA4 della pagina).
+ */
+export type JoinMode = 'merge' | 'lookup';
+
 export interface JoinSpec {
   datasetId: string;
-  /** Colonne comuni su cui unire (es. ["date"]). */
+  /** Colonne comuni con lo stesso nome (es. ["date"]). */
   on: string[];
+  /** Colonne con nomi diversi (es. pagina <-> landing_page). Hanno la precedenza su on. */
+  pairs?: JoinKey[];
+  mode?: JoinMode;
+}
+
+/** Metrica calcolata riga per riga (es. clic * key_events / sessions). */
+export interface Computed {
+  key: string;
+  label: string;
+  expr: string;
+  format?: ColumnFormat;
+  agg?: Agg;
 }
 
 export type VizType = 'kpi' | 'line' | 'area' | 'bar' | 'hbar' | 'stacked' | 'pie' | 'table' | 'scatter';
@@ -184,6 +224,8 @@ export interface VizSpec {
   limit?: number;
   dateGrain?: DateGrain;
   note?: string;
+  /** Metriche calcolate dal widget (dopo l'eventuale incrocio). */
+  computed?: Computed[];
 }
 
 /** Posizione e dimensione nella griglia della dashboard (12 colonne, righe da 30 px). */

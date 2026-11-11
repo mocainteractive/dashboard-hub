@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Database, LayoutDashboard, ShieldCheck, Sparkles } from 'lucide-react';
+import { BookOpen, Database, LayoutDashboard, ShieldCheck, Sparkles } from 'lucide-react';
 import { AppHeader } from './components/AppHeader';
 import { FeedbackWidget } from './components/FeedbackWidget';
 import { DataProvider } from './lib/DataContext';
@@ -7,17 +7,19 @@ import { useMoca } from './lib/MocaProvider';
 import { ChatView } from './views/ChatView';
 import { DashboardsView } from './views/DashboardsView';
 import { DataView } from './views/DataView';
+import { GuideView } from './views/GuideView';
 import { MissingScope, ScopeView } from './views/ScopeView';
 
 const APP_NAME = 'Dashboard Hub';
 
-type Tab = 'dashboard' | 'chat' | 'data' | 'scope';
+type Tab = 'dashboard' | 'chat' | 'data' | 'scope' | 'guide';
 
 const TABS: { key: Tab; label: string; icon: typeof LayoutDashboard }[] = [
   { key: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { key: 'chat', label: 'Chat con i dati', icon: Sparkles },
   { key: 'data', label: 'Dati', icon: Database },
   { key: 'scope', label: 'Perimetro e cache', icon: ShieldCheck },
+  { key: 'guide', label: 'Guida', icon: BookOpen },
 ];
 
 function readTab(): Tab {
@@ -67,7 +69,7 @@ export default function App() {
         </nav>
 
         <main className="flex-1 w-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
-          {!info.scope && tab !== 'scope' && (
+          {!info.scope && tab !== 'scope' && tab !== 'guide' && (
             <div className="mb-6">
               <MissingScope reason={info.scopeError} />
             </div>
@@ -85,6 +87,18 @@ export default function App() {
           {tab === 'chat' && <ChatView initialText={chatPrompt} onInitialUsed={() => setChatPrompt(null)} />}
           {tab === 'data' && <DataView onGoChat={() => setTab('chat')} />}
           {tab === 'scope' && <ScopeView />}
+          {tab === 'guide' && (
+            <GuideView
+              onGoChat={(prompt) => {
+                setChatPrompt(prompt ?? null);
+                setTab('chat');
+              }}
+              onOpenDashboard={(id) => {
+                setDashboardId(id);
+                setTab('dashboard');
+              }}
+            />
+          )}
         </main>
 
         <footer className="bg-white border-t border-moca-line py-4 text-center text-xs text-moca-gray">

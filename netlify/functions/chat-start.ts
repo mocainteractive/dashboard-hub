@@ -21,7 +21,7 @@ export default async (req: Request): Promise<Response> => {
   if ('response' in auth) return auth.response;
   const { session } = auth;
 
-  const body = await readBody<{ conversation_id?: unknown; message?: unknown; refresh?: unknown }>(req);
+  const body = await readBody<{ conversation_id?: unknown; message?: unknown; refresh?: unknown; tier?: unknown }>(req);
   if (!body) return fail(400, 'Richiesta non valida');
 
   const store = getStore({ name: 'dashboard-hub', consistency: 'strong' }) as unknown as BlobStore;
@@ -36,7 +36,7 @@ export default async (req: Request): Promise<Response> => {
     const res = await fetch(target, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'x-moca-internal': internalSecret(secret), Authorization: `Bearer ${bearer(req)}` },
-      body: JSON.stringify({ run_id: run.id, refresh: body.refresh === true }),
+      body: JSON.stringify({ run_id: run.id, refresh: body.refresh === true, tier: body.tier }),
       signal: AbortSignal.timeout(8000),
     }).catch(() => null);
     if (!res || (res.status !== 202 && !res.ok)) {

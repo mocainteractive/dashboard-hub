@@ -1,5 +1,6 @@
 import type {
   AiStats,
+  AiTier,
   CacheStats,
   ChatMessage,
   Conversation,
@@ -44,11 +45,11 @@ export interface Api {
   getConversation(id: string): Promise<Conversation>;
   deleteConversation(id: string): Promise<void>;
   /** Flusso con polling (Netlify Functions). */
-  chatStart(p: { conversationId?: string; message: string; refresh?: boolean }): Promise<{ runId: string; conversationId: string }>;
+  chatStart(p: { conversationId?: string; message: string; refresh?: boolean; tier?: AiTier }): Promise<{ runId: string; conversationId: string }>;
   runStatus(runId: string, after: number): Promise<RunStatusResponse>;
   cancelRun(runId: string): Promise<void>;
   /** Chat in streaming (POC locale, Cloud Run): eventi in tempo reale. */
-  chatStream(p: { conversationId?: string; message: string; refresh?: boolean }, onEvent: (e: StreamEvent) => void, signal: AbortSignal): Promise<void>;
+  chatStream(p: { conversationId?: string; message: string; refresh?: boolean; tier?: AiTier }, onEvent: (e: StreamEvent) => void, signal: AbortSignal): Promise<void>;
   clearCache(): Promise<number>;
 }
 
@@ -92,13 +93,13 @@ export function createApi(appSession: string): Api {
     return data as T;
   }
 
-  async function chatStream(p: { conversationId?: string; message: string; refresh?: boolean }, onEvent: (e: StreamEvent) => void, signal: AbortSignal) {
+  async function chatStream(p: { conversationId?: string; message: string; refresh?: boolean; tier?: AiTier }, onEvent: (e: StreamEvent) => void, signal: AbortSignal) {
     let res: Response;
     try {
       res = await fetch('/api/chat-stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${appSession}` },
-        body: JSON.stringify({ conversation_id: p.conversationId, message: p.message, refresh: p.refresh }),
+        body: JSON.stringify({ conversation_id: p.conversationId, message: p.message, refresh: p.refresh, tier: p.tier }),
         signal,
       });
     } catch {
@@ -151,8 +152,8 @@ export function createApi(appSession: string): Api {
     listConversations: async () => (await data<{ conversations: ConversationMeta[] }>('conversations.list')).conversations,
     getConversation: async (id) => (await data<{ conversation: Conversation }>('conversations.get', { id })).conversation,
     deleteConversation: async (id) => void (await data('conversations.delete', { id })),
-    chatStart: async ({ conversationId, message, refresh }) => {
-      const r = await post<{ run_id: string; conversation_id: string }>('chat-start', { conversation_id: conversationId, message, refresh });
+    chatStart: async ({ conversationId, message, refresh, tier }) => {
+      const r = await post<{ run_id: string; conversation_id: string }>('chat-start', { conversation_id: conversationId, message, refresh, tier });
       return { runId: r.run_id, conversationId: r.conversation_id };
     },
     runStatus: (runId, after) => data<RunStatusResponse>('run.status', { id: runId, after }),

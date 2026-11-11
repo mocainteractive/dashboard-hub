@@ -84,7 +84,29 @@ const META_INSIGHTS = JSON.stringify({
   totali: { spend: 22.5, impressions: 2200, clicks: 45 },
 });
 
+const GSC_QUERY_PAGE = `🔍 Combinazioni Query × Pagina per https://www.clientea.it/ (2026-11-01 - 2026-11-07):
+Mostrate 3 combinazioni.
+
+1. "clientea" → /
+   Clic: 193 | Impressioni: 686 | CTR: 28.13% | Posizione: 1.1
+
+2. "intranet clientea" → area-riservata
+   Clic: 116 | Impressioni: 149 | CTR: 77.85% | Posizione: 1.0
+
+3. "mutuo consap" → tipi-di-mutuo/mutuo-consap
+   Clic: 36 | Impressioni: 9,937 | CTR: 0.36% | Posizione: 6.7
+
+📌 Totale dalle 3 combinazioni visibili:
+   Clic: 345 | Impressioni: 10,772`;
+
 describe('formati reali dei server Moca', () => {
+  it('Search Console, combinazioni query × pagina: due colonne etichetta', () => {
+    const tables = extractTables(GSC_QUERY_PAGE);
+    expect(tables).toHaveLength(1);
+    expect(tables[0].columns.map((c) => c.key)).toEqual(['query', 'pagina', 'clic', 'impressioni', 'ctr', 'posizione']);
+    expect(tables[0].rows[2]).toMatchObject({ query: 'mutuo consap', pagina: 'tipi-di-mutuo/mutuo-consap', clic: 36 });
+  });
+
   it('Search Console, elenco numerato: etichetta sulla riga sopra, totale escluso', () => {
     const tables = extractTables(GSC_QUERIES);
     expect(tables).toHaveLength(1);

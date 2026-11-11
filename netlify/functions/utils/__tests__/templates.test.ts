@@ -20,6 +20,7 @@ function ga4(args: Record<string, unknown>): string {
   let rows: string[];
   if (!dims.length) rows = [metrics.map((m) => val(m, 0)).join(' | ')];
   else if (dims[0] === 'date') rows = ['20261101', '20261102', '20261103'].map((d, i) => [d, ...metrics.map((m) => val(m, i))].join(' | '));
+  else if (dims[0] === 'landingPage') rows = ['/mutui', '/'].map((d, i) => [d, ...metrics.map((m) => val(m, i))].join(' | '));
   else rows = ['Organic Search', 'Direct'].map((d, i) => [d, ...metrics.map((m) => val(m, i))].join(' | '));
   return `${head}${header}\n${'─'.repeat(20)}\n${rows.join('\n')}\n`;
 }
@@ -28,12 +29,13 @@ const GSC: Record<string, string> = {
   get_property_stats: `📊 Statistiche REALI aggregate:\n\n🔹 Clic totali: 2,180\n🔹 Impressioni totali: 142,477\n🔹 CTR medio: 1.53%\n🔹 Posizione media: 7.1\n\n✅ Dati effettivi.`,
   get_performance_timeseries: `📅 Andamento giornaliero:\n\n2026-11-01 — Clic: 8 | Impr: 923 | CTR: 0.87% | Pos: 16.3\n2026-11-02 — Clic: 46 | Impr: 1,503 | CTR: 3.06% | Pos: 12.5\n\n📌 Totale periodo — Clic: 54 | Impressioni: 2,426`,
   get_search_queries: `📊 Top 2 query di ricerca:\n\n1. "mutuo"\n   Clic: 26 | Impressioni: 688 | CTR: 3.78% | Posizione: 4.1\n\n2. "surroga"\n   Clic: 16 | Impressioni: 149 | CTR: 10.7% | Posizione: 2.0\n`,
+  get_query_page_combinations: `🔍 Combinazioni Query × Pagina:\n\n1. "mutuo prima casa" → mutui\n   Clic: 30 | Impressioni: 900 | CTR: 3.3% | Posizione: 4.0\n\n2. "clientea" → /\n   Clic: 50 | Impressioni: 100 | CTR: 50% | Posizione: 1.0\n`,
   get_top_pages: `📄 Top 2 pagine:\n\n1. area-riservata\n   Clic: 376 | Impressioni: 1,333 | CTR: 28.21% | Posizione: 1.3\n\n2. /\n   Clic: 335 | Impressioni: 4,959 | CTR: 6.76% | Posizione: 11.5\n`,
 };
 
 const tool = (name: string, props: string[]): McpToolDef => ({ name, description: name, inputSchema: { type: 'object', properties: Object.fromEntries(props.map((p) => [p, { type: 'string' }])) } });
-const GA4_TOOLS = [tool('get_custom_report', ['property_id', 'metrics', 'dimensions', 'start_date', 'end_date', 'limit'])];
-const GSC_TOOLS = ['get_property_stats', 'get_performance_timeseries', 'get_search_queries', 'get_top_pages'].map((n) => tool(n, ['siteUrl', 'startDate', 'endDate', 'limit']));
+const GA4_TOOLS = [tool('get_custom_report', ['property_id', 'metrics', 'dimensions', 'start_date', 'end_date', 'limit', 'dimension_filter'])];
+const GSC_TOOLS = ['get_property_stats', 'get_performance_timeseries', 'get_search_queries', 'get_top_pages', 'get_query_page_combinations'].map((n) => tool(n, ['siteUrl', 'startDate', 'endDate', 'limit']));
 
 describe('dashboard predefinita', () => {
   it('crea i grafici di GA4 e Search Console come ricette rileggibili per periodo', async () => {
@@ -61,7 +63,15 @@ describe('dashboard predefinita', () => {
       'Search Console, impressioni nel tempo',
       'Search Console, query principali',
       'Search Console, pagine principali',
+      'Query × conversioni stimate (organico)',
     ]);
+    // Incrocio query × conversioni: pagina "mutui" (GSC) = "/mutui" (GA4), conversioni stimate = 30 × 10 / 10.
+    const cross = dashboard.widgets.at(-1)!;
+    const cds = (await ts.get<Dataset>('dataset', cross.spec.datasetId))!;
+    expect(cds.rows.find((r) => r.query === 'mutuo prima casa')).toMatchObject({ pagina: 'mutui', sessions: 10, key_events: 10, conversioni_stimate: 30 });
+    expect(cds.join).toMatchObject({ pairs: [{ a: 'pagina', b: 'landing_page' }], mode: 'lookup' });
+    const crossPeriod = await datasetForPeriod(gateway, cds, '2026-09-01', '2026-09-30', async (id) => ts.get<Dataset>('dataset', id));
+    expect(crossPeriod.rows.length).toBe(2);
     expect(dashboard.filters).toMatchObject({ dateFrom: '2026-10-13', dateTo: '2026-11-11' });
     // Il guard ha imposto l'account del cliente.
     expect(call.mock.calls.find((c) => c[1] === 'get_custom_report')![2]).toMatchObject({ property_id: '338073799' });
@@ -104,6 +114,6 @@ describe('dashboard predefinita', () => {
     });
     const { dashboard, report } = await createDefaultDashboard({ ts, session, scope, gateway, from: '2026-10-13', to: '2026-11-11', hasServer: () => true });
     expect(dashboard.widgets).toHaveLength(4);
-    expect(report.filter((r) => !r.ok).map((r) => r.platform)).toEqual(['search_console', 'search_console', 'search_console', 'search_console']);
+    expect(report.filter((r) => !r.ok).map((r) => r.platform)).toEqual(['search_console', 'search_console', 'search_console', 'search_console', 'search_console']);
   });
 });

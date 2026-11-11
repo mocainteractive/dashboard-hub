@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
-import { AreaChart, BarChart3, BarChartHorizontal, Gauge, LineChart, Merge, PieChart, Plus, ScatterChart, Table2, Trash2, Layers } from 'lucide-react';
+import { AreaChart, BarChart3, BarChartHorizontal, Calculator, CheckCircle2, Gauge, LineChart, Merge, PieChart, Plus, ScatterChart, Table2, Trash2, Layers, AlertTriangle } from 'lucide-react';
 import { useData, useVizTable } from '../lib/DataContext';
 import { useMoca } from '../lib/MocaProvider';
 import { newLocalId } from '../lib/format';
-import { distinctValues } from '../shared/engine';
-import type { Agg, DashboardWidget, Dataset, Filter, VizSpec, VizType } from '../shared/types';
+import { compileExpr, distinctValues, joinKeysOf, joinTables } from '../shared/engine';
+import type { Agg, Column, Computed, DashboardWidget, Dataset, Filter, JoinKey, JoinMode, VizSpec, VizType } from '../shared/types';
 import { ChartView } from './ChartView';
 import { Button, Field, IconButton, Input, Modal, Select, Spinner } from './ui';
 
@@ -23,6 +23,23 @@ const VIZ_OPTIONS: { type: VizType; label: string; icon: typeof LineChart }[] = 
 ];
 
 const AGG_LABELS: Record<Agg, string> = { sum: 'Somma', avg: 'Media', min: 'Minimo', max: 'Massimo', count: 'Conteggio' };
+
+const PATH_KEY = /(page|pagina|url|landing|path|link)/;
+
+/** Coppia di colonne più probabile tra due dataset: stesso nome, date, pagine. */
+function suggestPair(a: Dataset, b: Dataset): JoinKey | null {
+  const da = a.columns.filter((c) => c.type !== 'metric');
+  const db = b.columns.filter((c) => c.type !== 'metric');
+  const same = da.find((c) => db.some((x) => x.key === c.key));
+  if (same) return { a: same.key, b: same.key };
+  const dateA = da.find((c) => c.type === 'date');
+  const dateB = db.find((c) => c.type === 'date');
+  if (dateA && dateB) return { a: dateA.key, b: dateB.key };
+  const pathA = da.find((c) => PATH_KEY.test(c.key));
+  const pathB = db.find((c) => PATH_KEY.test(c.key));
+  if (pathA && pathB) return { a: pathA.key, b: pathB.key };
+  return da[0] && db[0] ? { a: da[0].key, b: db[0].key } : null;
+}
 
 export function WidgetEditor({ initial, onSave, onClose, showWidth = true }: { initial?: DashboardWidget; onSave: (w: DashboardWidget) => void; onClose: () => void; showWidth?: boolean }) {
   const { datasets, loadDataset } = useData();
@@ -46,10 +63,69 @@ export function WidgetEditor({ initial, onSave, onClose, showWidth = true }: { i
   const columns = table?.columns ?? [];
   const dims = columns.filter((c) => c.type !== 'metric');
   const metrics = columns.filter((c) => c.type === 'metric');
-  const commonKeys = useMemo(() => {
-    if (!baseData || !joinData) return [];
-    return baseData.columns.filter((c) => c.type !== 'metric' && joinData.columns.some((j) => j.key === c.key)).map((c) => c.key);
+  const pair = spec.join ? joinKeysOf(spec.join)[0] : undefined;
+  const joinMode: JoinMode = spec.join?.mode ?? 'merge';
+
+  // Quante righe trovano una corrispondenza nell'altro dataset (calcolato dal vivo).
+  const matches = useMemo(() => {
+    if (!baseData || !joinData || !pair) return null;
+    try {
+      const t = joinTables(baseData, joinData, [pair], { a: 'A', b: 'B' }, 'lookup');
+      const extra = joinData.columns.filter((c) => c.type === 'metric').map((c) => (baseData.columns.some((x) => x.key === c.key) ? `b__${c.key}` : c.key));
+      const hit = t.rows.filter((r) => extra.some((k) => r[k] !== null && r[k] !== undefined)).length;
+      return { hit, total: t.rows.length };
+    } catch {
+      return { hit: 0, total: baseData.rows.length };
+    }
+  }, [baseData, joinData, pair]);
+
+  const setJoin = (patch: Partial<{ datasetId: string; pair: JoinKey; mode: JoinMode }>) => {
+    const datasetId = patch.datasetId ?? spec.join?.datasetId;
+    if (!datasetId) return set({ join: undefined });
+    const p = patch.pair ?? pair;
+    set({ join: { datasetId, on: [], ...(p ? { pairs: [p] } : {}), mode: patch.mode ?? joinMode } });
+  };
+
+  // Al cambio del dataset da incrociare, si propone la coppia di colonne più probabile.
+  useEffect(() => {
+    if (!baseData || !joinData || !spec.join || spec.join.datasetId !== joinData.id) return;
+    const current = joinKeysOf(spec.join)[0];
+    const ok = current && baseData.columns.some((c) => c.key === current.a) && joinData.columns.some((c) => c.key === current.b);
+    if (ok) return;
+    const s = suggestPair(baseData, joinData);
+    if (s) {
+      const looksLikePages = PATH_KEY.test(s.a) || PATH_KEY.test(s.b);
+      setSpec((x) => ({ ...x, join: { datasetId: joinData.id, on: [], pairs: [s], mode: looksLikePages ? 'lookup' : (x.join?.mode ?? 'merge') } }));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [baseData, joinData]);
+
+  // Metriche calcolate.
+  const computed = spec.computed ?? [];
+  const [draft, setDraft] = useState<{ label: string; expr: string }>({ label: '', expr: '' });
+  const baseKeys = columns.filter((c) => !computed.some((x) => x.key === c.key)).map((c) => c.key);
+  const draftError = useMemo(() => {
+    if (!draft.expr.trim()) return null;
+    try {
+      compileExpr(draft.expr, baseKeys);
+      return null;
+    } catch (e) {
+      return (e as Error).message;
+    }
+  }, [draft.expr, baseKeys]);
+  const addComputedMetric = () => {
+    const key = (draft.label || 'calcolata')
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^a-z0-9]+/g, '_')
+      .replace(/^_|_$/g, '')
+      .slice(0, 40) || 'calcolata';
+    const c: Computed = { key, label: draft.label || key, expr: draft.expr.trim(), format: 'decimal' };
+    set({ computed: [...computed.filter((x) => x.key !== key), c], metrics: [...spec.metrics.filter((m) => m !== key), key].slice(0, 6) });
+    setDraft({ label: '', expr: '' });
+  };
+  const numericCols: Column[] = columns.filter((c) => c.type === 'metric');
 
   const set = (patch: Partial<VizSpec>) => setSpec((s) => ({ ...s, ...patch }));
   const toggleMetric = (k: string) => set({ metrics: spec.metrics.includes(k) ? spec.metrics.filter((m) => m !== k) : [...spec.metrics, k].slice(0, 6) });
@@ -99,12 +175,12 @@ export function WidgetEditor({ initial, onSave, onClose, showWidth = true }: { i
                 <Merge size={14} /> Incrocia con un altro dataset
               </span>
               {spec.join && (
-                <IconButton label="Rimuovi incrocio" onClick={() => set({ join: undefined, metrics: spec.metrics.filter((m) => baseData?.columns.some((c) => c.key === m)) })}>
+                <IconButton label="Rimuovi incrocio" onClick={() => set({ join: undefined, metrics: spec.metrics.filter((m) => baseData?.columns.some((c) => c.key === m) || computed.some((c) => c.key === m)) })}>
                   <Trash2 size={14} />
                 </IconButton>
               )}
             </div>
-            <Select value={spec.join?.datasetId ?? ''} onChange={(e) => set({ join: e.target.value ? { datasetId: e.target.value, on: [] } : undefined })}>
+            <Select value={spec.join?.datasetId ?? ''} onChange={(e) => (e.target.value ? set({ join: { datasetId: e.target.value, on: [], mode: joinMode } }) : set({ join: undefined }))}>
               <option value="">Nessun incrocio</option>
               {datasets
                 .filter((d) => d.id !== spec.datasetId)
@@ -114,18 +190,94 @@ export function WidgetEditor({ initial, onSave, onClose, showWidth = true }: { i
                   </option>
                 ))}
             </Select>
-            {spec.join && (
-              <Field label="Colonna comune" help={commonKeys.length ? 'Le righe vengono unite su questa colonna.' : 'I due dataset non hanno colonne in comune.'}>
-                <Select value={spec.join.on[0] ?? ''} onChange={(e) => set({ join: { ...spec.join!, on: e.target.value ? [e.target.value] : [] } })}>
-                  <option value="">Scegli</option>
-                  {commonKeys.map((k) => (
-                    <option key={k} value={k}>
-                      {baseData?.columns.find((c) => c.key === k)?.label ?? k}
-                    </option>
+            {spec.join && joinData && baseData && (
+              <>
+                <div className="grid grid-cols-2 gap-1.5" role="radiogroup" aria-label="Tipo di incrocio">
+                  {(
+                    [
+                      ['merge', 'Unisci per valore', 'Una riga per valore comune, es. data: sessioni GA4 e spesa Meta giorno per giorno.'],
+                      ['lookup', 'Aggiungi colonne', 'Tiene le righe del primo dataset e aggiunge le metriche dell\'altro, es. query + conversioni della pagina.'],
+                    ] as const
+                  ).map(([m, label, hint]) => (
+                    <button
+                      key={m}
+                      type="button"
+                      role="radio"
+                      aria-checked={joinMode === m}
+                      title={hint}
+                      onClick={() => setJoin({ mode: m })}
+                      className={`rounded-md border px-2 py-1.5 text-left text-xs transition ${joinMode === m ? 'border-moca-red bg-moca-red-light text-moca-black' : 'border-moca-line text-moca-text hover:border-moca-gray'}`}
+                    >
+                      <span className="block font-semibold">{label}</span>
+                      <span className="block text-[10px] text-moca-gray leading-tight mt-0.5">{hint}</span>
+                    </button>
                   ))}
-                </Select>
-              </Field>
+                </div>
+                <div className="grid grid-cols-[1fr_auto_1fr] items-end gap-1.5">
+                  <Field label="Colonna qui">
+                    <Select value={pair?.a ?? ''} onChange={(e) => setJoin({ pair: { a: e.target.value, b: pair?.b ?? '' } })} className="!text-xs">
+                      {baseData.columns
+                        .filter((c) => c.type !== 'metric')
+                        .map((c) => (
+                          <option key={c.key} value={c.key}>
+                            {c.label}
+                          </option>
+                        ))}
+                    </Select>
+                  </Field>
+                  <span className="pb-2.5 text-moca-gray text-xs">=</span>
+                  <Field label="Colonna là">
+                    <Select value={pair?.b ?? ''} onChange={(e) => setJoin({ pair: { a: pair?.a ?? '', b: e.target.value } })} className="!text-xs">
+                      {joinData.columns
+                        .filter((c) => c.type !== 'metric')
+                        .map((c) => (
+                          <option key={c.key} value={c.key}>
+                            {c.label}
+                          </option>
+                        ))}
+                    </Select>
+                  </Field>
+                </div>
+                {matches && (
+                  <p className={`flex items-start gap-1.5 text-[11px] ${matches.hit ? 'text-chart-green' : 'text-amber-700'}`}>
+                    {matches.hit ? <CheckCircle2 size={13} className="shrink-0 mt-px" /> : <AlertTriangle size={13} className="shrink-0 mt-px" />}
+                    {matches.hit
+                      ? `${matches.hit} righe su ${matches.total} trovano una corrispondenza. Indirizzi, maiuscole e date vengono confrontati in forma normalizzata.`
+                      : 'Nessuna corrispondenza: scegli colonne che contengono gli stessi valori (es. pagina e landing page, data e data).'}
+                  </p>
+                )}
+              </>
             )}
+          </div>
+
+          <div className="rounded-lg border border-moca-line p-3 space-y-3">
+            <span className="text-xs font-semibold uppercase tracking-wide text-moca-black flex items-center gap-1.5">
+              <Calculator size={14} /> Metrica calcolata
+            </span>
+            {computed.map((c) => (
+              <div key={c.key} className="flex items-center gap-2 text-xs">
+                <span className="font-semibold text-moca-black">{c.label}</span>
+                <code className="text-moca-text truncate flex-1">{c.expr}</code>
+                <IconButton label="Rimuovi metrica" onClick={() => set({ computed: computed.filter((x) => x.key !== c.key), metrics: spec.metrics.filter((m) => m !== c.key) })}>
+                  <Trash2 size={14} />
+                </IconButton>
+              </div>
+            ))}
+            <Input placeholder="Nome, es. Conversioni stimate" value={draft.label} onChange={(e) => setDraft({ ...draft, label: e.target.value })} className="!text-xs" />
+            <Input placeholder="Formula, es. clic * key_events / sessions" value={draft.expr} onChange={(e) => setDraft({ ...draft, expr: e.target.value })} className="!text-xs font-mono" />
+            {numericCols.length > 0 && (
+              <div className="flex flex-wrap gap-1">
+                {numericCols.map((c) => (
+                  <button key={c.key} type="button" title={c.label} onClick={() => setDraft((d) => ({ ...d, expr: `${d.expr}${d.expr && !/[\s(*/+-]$/.test(d.expr) ? ' ' : ''}${c.key}` }))} className="rounded border border-moca-line px-1.5 py-0.5 text-[10px] font-mono text-moca-text hover:border-moca-red">
+                    {c.key}
+                  </button>
+                ))}
+              </div>
+            )}
+            {draftError && <p className="text-[11px] text-amber-700">{draftError}</p>}
+            <Button size="sm" variant="secondary" disabled={!draft.expr.trim() || !!draftError} onClick={addComputedMetric}>
+              <Plus size={14} /> Aggiungi metrica
+            </Button>
           </div>
 
           <div>

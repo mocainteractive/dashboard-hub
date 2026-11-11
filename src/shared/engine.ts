@@ -1,4 +1,4 @@
-import type { Agg, Cell, Column, DashboardFilters, DateGrain, Filter, QuerySpec, Row, VizSpec } from './types';
+import type { Agg, Cell, Column, Computed, DashboardFilters, DateGrain, Filter, JoinKey, JoinMode, QuerySpec, Row, VizSpec } from './types';
 
 /**
  * Motore dei dati: filtri, aggregazioni, incroci e preparazione dei grafici.
@@ -127,7 +127,7 @@ export function defaultAgg(col: Column | undefined): Agg {
 
 /** Filtri, raggruppamento, aggregazione, ordinamento e limite. */
 export function runQuery(table: Table, spec: QuerySpec): Table {
-  let t = applyFilters(table, spec.filters);
+  let t = applyFilters(addComputed(table, spec.computed), spec.filters);
   const byKey = new Map(t.columns.map((c) => [c.key, c]));
   const groupBy = (spec.groupBy ?? []).filter((k) => byKey.has(k));
   const metrics = (spec.metrics ?? []).filter((m) => byKey.has(m.key) || m.agg === 'count');
@@ -163,37 +163,224 @@ export function runQuery(table: Table, spec: QuerySpec): Table {
   return t;
 }
 
-/**
- * Incrocia due tabelle sulle colonne comuni (es. date): ogni lato viene prima
- * aggregato sulle chiavi, poi unito (full outer join). Le metriche del secondo
- * lato con lo stesso nome ricevono il prefisso "b__".
- */
-export function joinTables(a: Table, b: Table, on: string[], labels: { a: string; b: string }): Table {
-  const keysOk = on.filter((k) => a.columns.some((c) => c.key === k) && b.columns.some((c) => c.key === k));
-  if (!keysOk.length) throw new Error('Le due tabelle non hanno colonne in comune su cui incrociare.');
-  const metricsOf = (t: Table) => t.columns.filter((c) => c.type === 'metric' && !keysOk.includes(c.key));
-  const aggA = runQuery(a, { groupBy: keysOk, metrics: metricsOf(a).map((c) => ({ key: c.key })) });
-  const aggB = runQuery(b, { groupBy: keysOk, metrics: metricsOf(b).map((c) => ({ key: c.key })) });
+// --- Metriche calcolate ---
 
-  const aKeys = new Set(aggA.columns.map((c) => c.key));
+type Tok = { t: 'num'; v: number } | { t: 'id'; v: string } | { t: 'op'; v: string };
+
+function tokenize(expr: string): Tok[] {
+  const out: Tok[] = [];
+  const re = /\s*(?:(\d+(?:[.,]\d+)?)|([a-z_][a-z0-9_]*)|([-+*/()]))/gy;
+  let m: RegExpExecArray | null;
+  let pos = 0;
+  while (pos < expr.length) {
+    re.lastIndex = pos;
+    m = re.exec(expr);
+    if (!m || m[0].length === 0) {
+      if (/^\s*$/.test(expr.slice(pos))) break;
+      throw new Error(`Formula non valida vicino a "${expr.slice(pos, pos + 10)}"`);
+    }
+    if (m[1]) out.push({ t: 'num', v: Number(m[1].replace(',', '.')) });
+    else if (m[2]) out.push({ t: 'id', v: m[2] });
+    else if (m[3]) out.push({ t: 'op', v: m[3] });
+    pos = re.lastIndex;
+  }
+  return out;
+}
+
+type Node = { k: 'num'; v: number } | { k: 'col'; v: string } | { k: 'neg'; e: Node } | { k: 'bin'; op: string; l: Node; r: Node };
+
+/** Formula aritmetica sicura: numeri, colonne, + - * / e parentesi. Nessun codice eseguito. */
+export function compileExpr(expr: string, columns: string[]): (row: Row) => number | null {
+  const toks = tokenize(expr.toLowerCase());
+  let i = 0;
+  const peek = () => toks[i];
+  const take = () => toks[i++];
+  const primary = (): Node => {
+    const t = take();
+    if (!t) throw new Error('Formula incompleta');
+    if (t.t === 'num') return { k: 'num', v: t.v };
+    if (t.t === 'id') {
+      if (!columns.includes(t.v)) throw new Error(`Colonna "${t.v}" inesistente. Colonne: ${columns.join(', ')}`);
+      return { k: 'col', v: t.v };
+    }
+    if (t.v === '(') {
+      const e = sum();
+      if (take()?.v !== ')') throw new Error('Parentesi non chiusa');
+      return e;
+    }
+    if (t.v === '-') return { k: 'neg', e: primary() };
+    throw new Error(`Simbolo inatteso "${t.v}"`);
+  };
+  const product = (): Node => {
+    let l = primary();
+    while (peek()?.t === 'op' && (peek()!.v === '*' || peek()!.v === '/')) {
+      const op = String(take()!.v);
+      l = { k: 'bin', op, l, r: primary() };
+    }
+    return l;
+  };
+  const sum = (): Node => {
+    let l = product();
+    while (peek()?.t === 'op' && (peek()!.v === '+' || peek()!.v === '-')) {
+      const op = String(take()!.v);
+      l = { k: 'bin', op, l, r: product() };
+    }
+    return l;
+  };
+  const tree = sum();
+  if (i < toks.length) throw new Error('Formula non valida');
+  const ev = (n: Node, r: Row): number | null => {
+    switch (n.k) {
+      case 'num':
+        return n.v;
+      case 'col':
+        return num(r[n.v]);
+      case 'neg': {
+        const v = ev(n.e, r);
+        return v === null ? null : -v;
+      }
+      case 'bin': {
+        const a = ev(n.l, r);
+        const b = ev(n.r, r);
+        if (a === null || b === null) return null;
+        if (n.op === '+') return a + b;
+        if (n.op === '-') return a - b;
+        if (n.op === '*') return a * b;
+        return b === 0 ? null : a / b;
+      }
+    }
+  };
+  return (r) => {
+    const v = ev(tree, r);
+    return v === null || !Number.isFinite(v) ? null : Math.round(v * 1e6) / 1e6;
+  };
+}
+
+/** Aggiunge le metriche calcolate come nuove colonne. */
+export function addComputed(t: Table, computed: Computed[] = []): Table {
+  if (!computed.length) return t;
+  let columns = [...t.columns];
+  let rows = t.rows;
+  for (const c of computed) {
+    const fn = compileExpr(c.expr, columns.map((x) => x.key));
+    columns = [...columns.filter((x) => x.key !== c.key), { key: c.key, label: c.label || c.key, type: 'metric', format: c.format ?? 'decimal', agg: c.agg ?? 'sum' }];
+    rows = rows.map((r) => ({ ...r, [c.key]: fn(r) }));
+  }
+  return { columns, rows };
+}
+
+// --- Incroci ---
+
+const PATH_KEY = /(page|pagina|url|landing|path|link|percorso)/;
+
+/** Indirizzo o percorso nella forma "/percorso" (senza dominio, parametri e slash finale). */
+export function normalizePath(v: string): string {
+  let s = v.trim().toLowerCase();
+  try {
+    s = decodeURI(s);
+  } catch {
+    // Percorso non codificato: si tiene così.
+  }
+  s = s.replace(/^[a-z]+:\/\/[^/]+/, '').replace(/[?#].*$/, '').replace(/\/{2,}/g, '/');
+  if (!s.startsWith('/')) s = `/${s}`;
+  if (s.length > 1) s = s.replace(/\/+$/, '');
+  return s;
+}
+
+/** Valore di confronto: date al giorno, percorsi normalizzati, testo senza maiuscole e spazi superflui. */
+function joinValue(v: Cell, kind: 'date' | 'path' | 'text'): string {
+  if (v === null || v === undefined) return '';
+  const s = String(v);
+  if (kind === 'date') return s.slice(0, 10);
+  if (kind === 'path') return normalizePath(s);
+  return s.trim().toLowerCase().replace(/\s+/g, ' ').replace(/^["“«]|["”»]$/g, '');
+}
+
+/** Coppie di colonne da far corrispondere, da "on" (stesso nome) o da "pairs". */
+export function joinKeysOf(j: { on?: string[]; pairs?: JoinKey[] }): JoinKey[] {
+  if (j.pairs?.length) return j.pairs;
+  return (j.on ?? []).map((k) => ({ a: k, b: k }));
+}
+
+/**
+ * Incrocia due tabelle.
+ *  - merge: ogni lato aggregato sulle chiavi, poi unito (full outer join): es. sessioni GA4 e spesa Meta per data.
+ *  - lookup: tutte le righe della prima, con le metriche della seconda che corrispondono (aggregate per chiave):
+ *    es. query GSC per pagina + sessioni e conversioni GA4 della landing page.
+ * Le chiavi si confrontano normalizzate (date, percorsi, maiuscole). Le metriche del secondo lato con lo stesso nome
+ * ricevono il prefisso "b__".
+ */
+export function joinTables(a: Table, b: Table, on: string[] | JoinKey[], labels: { a: string; b: string }, mode: JoinMode = 'merge'): Table {
+  const pairs: JoinKey[] = (on as (string | JoinKey)[]).map((k) => (typeof k === 'string' ? { a: k, b: k } : k));
+  const colA = new Map(a.columns.map((c) => [c.key, c]));
+  const colB = new Map(b.columns.map((c) => [c.key, c]));
+  const keys = pairs.filter((p) => colA.has(p.a) && colB.has(p.b));
+  if (!keys.length) throw new Error('Scegli le colonne da far corrispondere tra i due dataset.');
+  const kinds = keys.map((p) => (colA.get(p.a)!.type === 'date' || colB.get(p.b)!.type === 'date' ? 'date' : PATH_KEY.test(p.a) || PATH_KEY.test(p.b) ? 'path' : 'text') as 'date' | 'path' | 'text');
+  const idA = (r: Row) => JSON.stringify(keys.map((p, i) => joinValue(r[p.a], kinds[i])));
+  const idB = (r: Row) => JSON.stringify(keys.map((p, i) => joinValue(r[p.b], kinds[i])));
+  const keyB = new Set(keys.map((p) => p.b));
+  const keyA = new Set(keys.map((p) => p.a));
+
+  // Metriche del secondo lato aggregate per chiave normalizzata.
+  const bMetrics = b.columns.filter((c) => c.type === 'metric' && !keyB.has(c.key));
+  const aKeys = new Set(a.columns.map((c) => c.key));
   const rename = new Map<string, string>();
   const bCols: Column[] = [];
-  for (const c of metricsOf(b)) {
+  for (const c of bMetrics) {
     const key = aKeys.has(c.key) ? `b__${c.key}` : c.key;
     rename.set(c.key, key);
     bCols.push({ ...c, key, label: aKeys.has(c.key) ? `${c.label} (${labels.b})` : c.label });
   }
-  const aCols = aggA.columns.map((c) => (c.type === 'metric' && rename.has(c.key) ? { ...c, label: `${c.label} (${labels.a})` } : c));
-
-  const id = (r: Row) => JSON.stringify(keysOk.map((k) => r[k]));
-  const merged = new Map<string, Row>();
-  for (const r of aggA.rows) merged.set(id(r), { ...r });
-  for (const r of aggB.rows) {
-    const target = merged.get(id(r)) ?? Object.fromEntries(keysOk.map((k) => [k, r[k]]));
-    for (const [from, to] of rename) target[to] = r[from];
-    merged.set(id(r), target);
+  const groupsB = new Map<string, Row[]>();
+  for (const r of b.rows) {
+    const id = idB(r);
+    if (!groupsB.has(id)) groupsB.set(id, []);
+    groupsB.get(id)!.push(r);
   }
-  const rows = [...merged.values()].sort((x, y) => cmp(x[keysOk[0]], y[keysOk[0]]));
+  const aggB = new Map<string, Row>();
+  for (const [id, rows] of groupsB) {
+    const out: Row = {};
+    for (const c of bMetrics) out[rename.get(c.key)!] = aggregateValues(rows.map((r) => r[c.key]), defaultAgg(c));
+    aggB.set(id, { ...out, __first: JSON.stringify(keys.map((p) => rows[0][p.b])) });
+  }
+
+  if (mode === 'lookup') {
+    const rows = a.rows.map((r) => {
+      const hit = aggB.get(idA(r));
+      const extra: Row = {};
+      for (const c of bCols) extra[c.key] = hit ? (hit[c.key] ?? null) : null;
+      return { ...r, ...extra };
+    });
+    const aCols = a.columns.map((c) => (c.type === 'metric' && rename.has(c.key) ? { ...c, label: `${c.label} (${labels.a})` } : c));
+    return { columns: [...aCols, ...bCols], rows };
+  }
+
+  const aMetrics = a.columns.filter((c) => c.type === 'metric' && !keyA.has(c.key));
+  const groupsA = new Map<string, Row[]>();
+  for (const r of a.rows) {
+    const id = idA(r);
+    if (!groupsA.has(id)) groupsA.set(id, []);
+    groupsA.get(id)!.push(r);
+  }
+  const merged = new Map<string, Row>();
+  for (const [id, rows] of groupsA) {
+    const out: Row = {};
+    keys.forEach((p) => (out[p.a] = kinds[keys.indexOf(p)] === 'date' ? joinValue(rows[0][p.a], 'date') : rows[0][p.a]));
+    for (const c of aMetrics) out[c.key] = aggregateValues(rows.map((r) => r[c.key]), defaultAgg(c));
+    merged.set(id, out);
+  }
+  for (const [id, row] of aggB) {
+    const target = merged.get(id) ?? Object.fromEntries(keys.map((p, i) => [p.a, (JSON.parse(row.__first as string) as Cell[])[i]]));
+    for (const c of bCols) target[c.key] = row[c.key];
+    merged.set(id, target);
+  }
+  const aCols = [...keys.map((p) => colA.get(p.a)!), ...aMetrics.map((c) => (rename.has(c.key) ? { ...c, label: `${c.label} (${labels.a})` } : c))];
+  // Valori mancanti su un lato: null esplicito, non colonna assente.
+  const all = [...aCols, ...bCols].map((c) => c.key);
+  const rows = [...merged.values()]
+    .map((r) => Object.fromEntries(all.map((k) => [k, r[k] ?? null])) as Row)
+    .sort((x, y) => cmp(x[keys[0].a], y[keys[0].a]));
   return { columns: [...aCols, ...bCols], rows };
 }
 

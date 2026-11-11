@@ -196,3 +196,66 @@ describe('filtri sulle date nella ricetta', () => {
     expect(data.rows.map((r) => r.date)).toEqual(['2026-10-01', '2026-10-15', '2026-10-31']);
   });
 });
+
+describe('incroci ripetuti sul nuovo periodo', () => {
+  it('query GSC per pagina + conversioni GA4 organiche: entrambi i lati riletti, stima ricalcolata', async () => {
+    const store = new MemoryBlobStore();
+    const ts = new TenantStore(store, { cid: 'cliente-a' });
+    const tools: Record<string, McpToolDef[]> = {
+      search_console: [{ name: 'get_query_page_combinations', description: 'q', inputSchema: { type: 'object', properties: { siteUrl: { type: 'string' }, startDate: { type: 'string' }, endDate: { type: 'string' } } } }],
+      ga4: [{ name: 'get_custom_report', description: 'r', inputSchema: { type: 'object', properties: { property_id: { type: 'string' }, start_date: { type: 'string' }, end_date: { type: 'string' }, dimension_filter: { type: 'object' } } } }],
+    };
+    const call = vi.fn(async (_s: unknown, name: string, args: Record<string, unknown>) => {
+      const k = String(args.startDate ?? args.start_date) === '2026-09-01' ? 2 : 1;
+      if (name === 'get_query_page_combinations') {
+        return `🔍 Combinazioni Query × Pagina:\n\n1. "mutuo consap" → tipi-di-mutuo/mutuo-consap\n   Clic: ${30 * k} | Impressioni: 900\n\n2. "consap requisiti" → tipi-di-mutuo/mutuo-consap\n   Clic: ${10 * k} | Impressioni: 300\n`;
+      }
+      return `Righe:\nlandingPage | sessions | keyEvents\n────\n/tipi-di-mutuo/mutuo-consap | ${100 * k} | ${10 * k}\n`;
+    });
+    const gateway = new McpGateway(ts, store, scopeA(), {
+      call,
+      server: () => ({ url: 'https://x.invalid' }),
+      tools: async (p) => tools[p] ?? [],
+    });
+    const base = { description: '', rows: [], rowCount: 0, createdAt: '', createdBy: '', updatedAt: '' };
+    const ga4: Dataset = {
+      ...base,
+      id: 'ga4lp',
+      title: 'GA4, landing organiche',
+      platforms: ['ga4'],
+      accounts: ['ga4:338073799'],
+      columns: [
+        { key: 'landing_page', label: 'Landing page', type: 'dimension' },
+        { key: 'sessions', label: 'Sessioni', type: 'metric' },
+        { key: 'key_events', label: 'Eventi chiave', type: 'metric' },
+      ],
+      sourceTable: 'Righe',
+      sourceCalls: [{ platform: 'ga4', tool: 'get_custom_report', args: { property_id: '338073799', start_date: '2026-10-01', end_date: '2026-10-31', dimension_filter: { dimension: 'sessionDefaultChannelGroup', value: 'Organic Search' } }, fetchedAt: '', fromCache: false }],
+    };
+    const joined: Dataset = {
+      ...base,
+      id: 'qconv',
+      title: 'Query × conversioni',
+      platforms: ['search_console', 'ga4'],
+      accounts: ['search_console:sc-domain:clientea.it'],
+      columns: [
+        { key: 'query', label: 'Query', type: 'dimension' },
+        { key: 'clic', label: 'Clic', type: 'metric' },
+        { key: 'conversioni_stimate', label: 'Conversioni stimate', type: 'metric' },
+      ],
+      sourceTable: 'Combinazioni Query × Pagina',
+      sourceKeys: ['query', 'pagina', 'clic', 'impressioni'],
+      join: { datasetId: 'ga4lp', pairs: [{ a: 'pagina', b: 'landing_page' }], mode: 'lookup' },
+      transform: { computed: [{ key: 'conversioni_stimate', label: 'Conversioni stimate', expr: 'clic * key_events / sessions' }] },
+      sourceCalls: [{ platform: 'search_console', tool: 'get_query_page_combinations', args: { siteUrl: 'sc-domain:clientea.it', startDate: '2026-10-01', endDate: '2026-10-31' }, fetchedAt: '', fromCache: false }],
+    };
+    const data = await datasetForPeriod(gateway, joined, '2026-09-01', '2026-09-30', async (id) => (id === 'ga4lp' ? ga4 : null));
+    // Entrambe le fonti rilette con le nuove date; il filtro sul canale organico resta.
+    expect(call.mock.calls.map((c) => c[1]).sort()).toEqual(['get_custom_report', 'get_query_page_combinations']);
+    expect(call.mock.calls.find((c) => c[1] === 'get_custom_report')![2]).toMatchObject({ start_date: '2026-09-01', end_date: '2026-09-30', dimension_filter: { value: 'Organic Search' } });
+    expect(data.rows).toEqual([
+      { query: 'mutuo consap', clic: 60, conversioni_stimate: 6 },
+      { query: 'consap requisiti', clic: 20, conversioni_stimate: 2 },
+    ]);
+  });
+});

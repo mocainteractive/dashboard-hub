@@ -1,14 +1,18 @@
-import { joinTables, parseNumber, runQuery, type Table } from '../../../src/shared/engine';
+import { addComputed, joinTables, parseNumber, runQuery, type Table } from '../../../src/shared/engine';
 import { inScope, scopedPlatforms } from '../../../src/shared/scope';
 import {
   PLATFORM_LABELS,
   type AiProvider,
   type AiStats,
+  type AiTier,
   type AiUsage,
   type Agg,
   type ChatMessage,
   type Column,
+  type Computed,
   type Conversation,
+  type JoinKey,
+  type JoinMode,
   type ConversationMeta,
   type Dataset,
   type DatasetMeta,
@@ -23,7 +27,7 @@ import {
   type VizSpec,
   type VizType,
 } from '../../../src/shared/types';
-import { adapterFor, DEFAULT_MODELS, EFFORTS, LlmError, type Effort, type LlmAdapter, type ToolCall, type ToolDef, type ToolResult, type Transcript } from './llm';
+import { adapterFor, DEFAULT_TIER, EFFORTS, LlmError, TIER_MODELS, type Effort, type LlmAdapter, type SystemPrompt, type ToolCall, type ToolDef, type ToolResult, type Transcript } from './llm';
 import { periodOfArgs } from './period';
 import { extractTables, previewTable, type ParsedTable } from './tabular';
 import { addUsage, emptyUsage, formatUsd } from '../../../src/shared/pricing';
@@ -73,6 +77,7 @@ export interface AgentInput {
   /** Sostituibile nei test. */
   adapter?: LlmAdapter;
   effort?: Effort;
+  tier?: AiTier;
 }
 
 interface StagedTable {
@@ -99,7 +104,37 @@ const FILTER_SCHEMA = {
   },
 };
 
+const COMPUTED_SCHEMA = {
+  type: 'array',
+  description: "Metriche calcolate riga per riga con + - * / e parentesi sulle colonne (anche quelle aggiunte dall'incrocio), es. clic * key_events / sessions",
+  items: {
+    type: 'object',
+    properties: {
+      key: { type: 'string', description: 'snake_case' },
+      label: { type: 'string' },
+      expr: { type: 'string' },
+      format: { type: 'string', enum: ['number', 'decimal', 'currency', 'percent', 'duration'] },
+    },
+    required: ['key', 'label', 'expr'],
+  },
+};
+
+const JOIN_SCHEMA = {
+  type: 'object',
+  description:
+    "Incrocio con un altro dataset (dataset_id) o tabella (table_id). on: coppie di colonne da far corrispondere, anche con nomi diversi (es. pagina e landing_page: i percorsi vengono normalizzati). mode lookup: tiene tutte le righe di partenza e aggiunge le metriche dell'altro lato (es. query GSC + conversioni GA4 della pagina); merge: unisce per valore comune sommando i due lati (es. sessioni GA4 e spesa Meta per data).",
+  properties: {
+    dataset_id: { type: 'string' },
+    table_id: { type: 'string' },
+    on: { type: 'array', items: { type: 'object', properties: { left: { type: 'string' }, right: { type: 'string' } }, required: ['left', 'right'] } },
+    mode: { type: 'string', enum: ['lookup', 'merge'] },
+  },
+  required: ['on'],
+};
+
 const TRANSFORM_PROPS = {
+  join: JOIN_SCHEMA,
+  computed: COMPUTED_SCHEMA,
   filters: FILTER_SCHEMA,
   group_by: { type: 'array', items: { type: 'string' }, description: 'Colonne per cui raggruppare' },
   metrics: {
@@ -145,6 +180,7 @@ function internalTools(): ToolDef[] {
             },
           },
           rows: { type: 'array', items: { type: 'array', items: { description: 'Valore della cella' } }, description: 'Solo per piccoli dati non presenti in alcuna tabella' },
+          manual_reason: { type: 'string', description: 'Obbligatorio con rows se in questa risposta ci sono tabelle o dataset: perché i dati non si possono ottenere con table_id o dataset_id' },
           replaces_dataset_id: { type: 'string', description: 'Dataset da sostituire (stesse colonne): i grafici che lo usano passano al nuovo' },
         },
         required: ['title', 'description'],
@@ -183,13 +219,41 @@ function internalTools(): ToolDef[] {
           date_grain: { type: 'string', enum: ['day', 'week', 'month'] },
           limit: { type: 'number' },
           join_dataset_id: { type: 'string' },
-          join_on: { type: 'array', items: { type: 'string' } },
+          join_on: { type: 'array', items: { type: 'string' }, description: 'Colonne con lo stesso nome' },
+          join_pairs: { type: 'array', items: { type: 'object', properties: { left: { type: 'string' }, right: { type: 'string' } }, required: ['left', 'right'] }, description: 'Colonne con nomi diversi' },
+          join_mode: { type: 'string', enum: ['lookup', 'merge'] },
+          computed: COMPUTED_SCHEMA,
           note: { type: 'string', description: 'Una frase di lettura del grafico' },
         },
         required: ['title', 'type', 'metrics'],
       },
     },
   ];
+}
+
+const FORMATS = ['number', 'decimal', 'currency', 'percent', 'duration'];
+
+function parseComputed(v: unknown): Computed[] {
+  if (!Array.isArray(v)) return [];
+  return v
+    .filter((c): c is Record<string, unknown> => !!c && typeof c === 'object')
+    .slice(0, 8)
+    .map((c) => ({
+      key: str(c.key, 40).toLowerCase().replace(/[^a-z0-9_]/g, '_'),
+      label: str(c.label, 80),
+      expr: str(c.expr, 300),
+      ...(FORMATS.includes(c.format as string) ? { format: c.format as Computed['format'] } : {}),
+    }))
+    .filter((c) => c.key && c.expr);
+}
+
+/** Coppie di colonne dell'incrocio: [{left, right}] oppure ["colonna"]. */
+function parsePairs(v: unknown): JoinKey[] {
+  if (!Array.isArray(v)) return [];
+  return v
+    .slice(0, 3)
+    .map((p) => (typeof p === 'string' ? { a: p, b: p } : p && typeof p === 'object' ? { a: str((p as Record<string, unknown>).left, 60), b: str((p as Record<string, unknown>).right, 60) } : null))
+    .filter((p): p is JoinKey => !!p && !!p.a && !!p.b);
 }
 
 /** Trasformazione (filtri, raggruppamento, ordinamento) dagli argomenti di uno strumento. */
@@ -202,6 +266,8 @@ function parseTransform(a: Record<string, unknown>): QuerySpec {
   const groupBy = Array.isArray(a.group_by) ? a.group_by.filter((g): g is string => typeof g === 'string').slice(0, 5) : [];
   const filters = parseFilters(a.filters);
   const t: QuerySpec = {};
+  const computed = parseComputed(a.computed);
+  if (computed.length) t.computed = computed;
   if (filters.length) t.filters = filters;
   if (groupBy.length) t.groupBy = groupBy;
   if (metrics.length) t.metrics = metrics;
@@ -287,7 +353,7 @@ export class AgentRunner {
     return { defs, lines };
   }
 
-  private systemPrompt(toolLines: string[], deferred: boolean): string {
+  private systemPrompt(toolLines: string[], deferred: boolean): SystemPrompt {
     const { session } = this.input;
     const scope = session.scope!;
     const today = new Date().toLocaleDateString('it-IT', { timeZone: scope.timezone || 'Europe/Rome', weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
@@ -301,7 +367,7 @@ export class AgentRunner {
         )
       : ['(nessun dataset salvato)'];
 
-    return [
+    const stable = [
       `Sei l'analista dati di Moca Interactive nell'app Dashboard Hub. Lavori per UN SOLO cliente: ${session.cname}.`,
       '',
       'REGOLE',
@@ -318,22 +384,24 @@ export class AgentRunner {
       '- Nel passaggio successivo, sempre in parallelo: save_dataset con table_id (titolo e descrizione con fonte, account, periodo) e da 1 a 3 create_visualization con lo stesso table_id.',
       '- Per filtrare, raggruppare od ordinare (es. query non di brand, top 10 campagne) passa filters, group_by, metrics, sort_by, limit a save_dataset: lo fa il server e il dataset resta filtrabile per periodo nelle dashboard. Puoi esplorare una tabella con query_dataset e table_id prima di salvarla.',
       '- Non scrivere mai a mano (rows) dati che si trovano in una tabella: un dataset scritto a mano non segue il periodo della dashboard.',
+      "- INCROCI: per unire due fonti usa save_dataset con join (on: coppie {left, right} anche con nomi diversi) e computed per i calcoli. Per data: mode merge su date (es. sessioni GA4 e spesa Meta). Per pagina: mode lookup; i percorsi si normalizzano da soli (https://sito/pagina/, /pagina e pagina coincidono).",
+      "- Query di Search Console e conversioni GA4: GA4 non conosce le query, la chiave comune è la pagina. Leggi le combinazioni query × pagina di Search Console e le landing page di GA4 filtrate sul canale Organic Search (sessioni ed eventi chiave), poi save_dataset con table_id delle query, join {table_id delle landing page, on [{left: 'pagina', right: 'landing_page'}], mode: 'lookup'} e computed conversioni_stimate = clic * key_events / sessions. Spiega che è una stima: ripartisce le conversioni della pagina in base ai clic di ogni query.",
       '- Se ti chiedono di rendere filtrabile o ricreare un dataset esistente, rileggi i dati, salvalo con replaces_dataset_id e le stesse colonne (rinominale con columns key e source se la tabella le chiama in un altro modo): i grafici passano da soli al nuovo.',
       '- Poi chiudi con una lettura dei dati in poche frasi: cosa emerge, cosa fare. Usa i TOTALI indicati dal server per le somme, non sommare le righe.',
       '- Solo se una risposta MCP non contiene tabelle, ricava i numeri dal testo e, se servono a un grafico, salvali con save_dataset e rows (poche righe).',
       '- Non inventare numeri: se un dato non è disponibile dillo.',
       '',
-      `Oggi è ${today}. Valuta: ${scope.currency ?? 'EUR'}. Fuso: ${scope.timezone ?? 'Europe/Rome'}.`,
+      `Valuta: ${scope.currency ?? 'EUR'}. Fuso: ${scope.timezone ?? 'Europe/Rome'}.`,
       '',
       'ACCOUNT DEL CLIENTE (dal Data Lake)',
       ...accountLines,
       '',
       'SERVER MCP DISPONIBILI',
       ...(toolLines.length ? toolLines : ['(nessuno)']),
-      '',
-      'CATALOGO DATASET GIÀ SALVATI (riusali quando possibile)',
-      ...catalogLines,
     ].join('\n');
+    // Data e catalogo cambiano a ogni risposta: dopo il prefisso in cache.
+    const dynamic = [`Oggi è ${today}.`, '', 'CATALOGO DATASET GIÀ SALVATI (riusali quando possibile, con dataset_id)', ...catalogLines].join('\n');
+    return { stable, dynamic };
   }
 
   private async loadTranscript(provider: AiProvider, model: string): Promise<Transcript> {
@@ -363,7 +431,8 @@ export class AgentRunner {
       if (call.name === 'query_dataset') return { ...base, content: await this.queryDataset(call.args) };
       return { ...base, content: await this.createViz(call.args) };
     } catch (err) {
-      const msg = err instanceof Error ? err.message.slice(0, 200) : 'errore';
+      // Messaggi completi: spiegano al modello come correggere la chiamata.
+      const msg = err instanceof Error ? err.message.slice(0, 1500) : 'errore';
       return { ...base, content: `Errore: ${msg}`, isError: true };
     }
   }
@@ -464,6 +533,19 @@ export class AgentRunner {
     return { table: parent, parent };
   }
 
+  /** Lato destro di un incrocio: sempre un dataset salvato, così l'incrocio si ripete per ogni periodo. */
+  private async joinTarget(j: Record<string, unknown>): Promise<{ ds: Dataset; pairs: JoinKey[]; mode: JoinMode }> {
+    const pairs = parsePairs(j.on);
+    if (!pairs.length) throw new Error('Incrocio: indica in on le coppie di colonne {left, right} da far corrispondere.');
+    const mode: JoinMode = j.mode === 'merge' ? 'merge' : 'lookup';
+    let ds: Dataset | null = null;
+    if (str(j.table_id, 10)) ds = await this.saveRecipe({ table_id: str(j.table_id, 10) });
+    else ds = await this.loadDataset(str(j.dataset_id, 80));
+    if (!ds) throw new Error("Incrocio: dataset o tabella dell'altro lato inesistente.");
+    this.datasetsUsed.add(ds.id);
+    return { ds, pairs, mode };
+  }
+
   /**
    * Dataset come ricetta: tabella MCP (o dataset padre) + trasformazione.
    * Le righe le calcola il server: il modello non le ricopia mai.
@@ -471,12 +553,23 @@ export class AgentRunner {
   private async saveRecipe(a: Record<string, unknown>, opts: { defaultTitle?: string } = {}): Promise<Dataset> {
     const { table, staged, parent } = await this.sourceOf(a);
     const transform = parseTransform(a);
+    const joinArgs = a.join && typeof a.join === 'object' ? (a.join as Record<string, unknown>) : null;
     // Una tabella salvata senza trasformazioni diventa un solo dataset, anche se richiesta due volte.
-    if (staged && isEmpty(transform) && !a.columns && staged.datasetId && !str(a.replaces_dataset_id, 80)) {
+    if (staged && isEmpty(transform) && !joinArgs && !a.columns && staged.datasetId && !str(a.replaces_dataset_id, 80)) {
       const ds = this.datasets.get(staged.datasetId);
       if (ds) return ds;
     }
-    const result = isEmpty(transform) ? table : runQuery(table, transform);
+    let base = table;
+    let join: Dataset['join'];
+    if (joinArgs) {
+      const target = await this.joinTarget(joinArgs);
+      base = joinTables(table, target.ds, target.pairs, { a: staged ? staged.table.label : parent!.title, b: target.ds.title }, target.mode);
+      join = { datasetId: target.ds.id, pairs: target.pairs, mode: target.mode };
+      if (target.mode === 'lookup' && !base.rows.some((r) => target.ds.columns.some((c) => c.type === 'metric' && r[c.key] !== null && r[c.key] !== undefined))) {
+        throw new Error(`Incrocio senza corrispondenze: nessun valore di ${target.pairs.map((p) => p.a).join(', ')} trova un valore uguale in ${target.pairs.map((p) => p.b).join(', ')}. Controlla le colonne scelte.`);
+      }
+    }
+    const result = isEmpty(transform) ? base : runQuery(base, transform);
     if (!result.rows.length && transform.filters?.length) throw new Error('Nessuna riga dopo i filtri: controlla colonne e valori.');
 
     let columns = result.columns;
@@ -520,7 +613,8 @@ export class AgentRunner {
       columns,
       rows,
       sourceCalls: staged ? [staged.call] : parent!.sourceCalls,
-      ...(staged ? { sourceTable: staged.table.label } : { derivedFrom: parent!.id }),
+      ...(staged ? { sourceTable: staged.table.label, sourceKeys: staged.table.columns.map((c) => c.key) } : { derivedFrom: parent!.id }),
+      ...(join ? { join } : {}),
       ...(isEmpty(transform) ? {} : { transform }),
       ...(Object.keys(renames).length ? { renames } : {}),
     });
@@ -549,6 +643,16 @@ export class AgentRunner {
       .filter((c, i, arr) => arr.findIndex((x) => x.key === c.key) === i)
       .map((c) => ({ key: c.key, label: c.label || c.key, type: c.type, ...(c.format ? { format: c.format } : {}), ...(c.agg ? { agg: c.agg } : {}) }));
     if (!columns.length) throw new Error('Passa table_id o dataset_id (consigliato), oppure colonne (key, label, type) e righe.');
+    // Righe a mano quando esiste una fonte rileggibile: si rifiuta e si indica la ricetta da usare.
+    const sources = [
+      ...[...this.tables.keys()].map((id) => `table_id ${id} (${this.tables.get(id)!.table.label}: ${this.tables.get(id)!.table.columns.map((c) => c.key).join(', ')})`),
+      ...[...this.datasetsUsed].map((id) => `dataset_id ${id} (${this.datasets.get(id)?.title ?? ''}: ${this.datasets.get(id)?.columns.map((c) => c.key).join(', ') ?? ''})`),
+    ];
+    if (sources.length && !str(a.manual_reason, 300)) {
+      throw new Error(
+        `Non salvare righe scritte a mano: non seguirebbero il periodo della dashboard. Parti da una di queste fonti e usa filters (eq, neq, in, not_in, contains, not_contains, gt, lt), group_by, metrics, sort_by, limit e columns: ${sources.join('; ')}. Usa rows con manual_reason solo se i numeri non sono in nessuna di queste fonti.`,
+      );
+    }
     if (str(a.replaces_dataset_id, 80)) throw new Error('Per sostituire un dataset parti da table_id o dataset_id: un dataset scritto a mano non è filtrabile per periodo.');
     const rawRows = Array.isArray(a.rows) ? a.rows.slice(0, MAX_ROWS) : [];
     const rows: Row[] = [];
@@ -600,7 +704,21 @@ export class AgentRunner {
       return (e as Error).message;
     }
     const t = parseTransform(a);
-    const result = runQuery(source.table, { ...t, limit: Math.min(t.limit ?? 200, 200) });
+    let base = source.table;
+    if (a.join && typeof a.join === 'object') {
+      try {
+        const target = await this.joinTarget(a.join as Record<string, unknown>);
+        base = joinTables(base, target.ds, target.pairs, { a: 'A', b: target.ds.title }, target.mode);
+      } catch (e) {
+        return (e as Error).message;
+      }
+    }
+    let result;
+    try {
+      result = runQuery(base, { ...t, limit: Math.min(t.limit ?? 200, 200) });
+    } catch (e) {
+      return (e as Error).message;
+    }
     await this.event('query', source.parent ? `Uso i dati già salvati: ${source.parent.title}` : `Analizzo la tabella ${source.staged!.id}`);
     return clip(JSON.stringify({ columns: result.columns.map((c) => c.key), rows: result.rows }), 15000);
   }
@@ -621,12 +739,22 @@ export class AgentRunner {
       const other = await this.loadDataset(a.join_dataset_id);
       if (!other) return 'Dataset da incrociare inesistente.';
       const on = Array.isArray(a.join_on) ? a.join_on.filter((k): k is string => typeof k === 'string') : [];
+      const pairs = parsePairs(a.join_pairs);
+      const mode: JoinMode = a.join_mode === 'lookup' ? 'lookup' : 'merge';
       try {
-        table = joinTables(ds, other, on, { a: ds.title, b: other.title });
+        table = joinTables(ds, other, pairs.length ? pairs : on, { a: ds.title, b: other.title }, mode);
       } catch (e) {
         return (e as Error).message;
       }
-      join = { datasetId: other.id, on };
+      join = { datasetId: other.id, on: pairs.length ? [] : on, ...(pairs.length ? { pairs } : {}), mode };
+    }
+    const computed = parseComputed(a.computed);
+    if (computed.length) {
+      try {
+        table = addComputed(table, computed);
+      } catch (e) {
+        return (e as Error).message;
+      }
     }
     const keys = new Set(table.columns.map((c) => c.key));
     const metrics = (Array.isArray(a.metrics) ? a.metrics : []).filter((m): m is string => typeof m === 'string' && keys.has(m)).slice(0, 6);
@@ -647,6 +775,7 @@ export class AgentRunner {
       ...(['day', 'week', 'month'].includes(a.date_grain as string) ? { dateGrain: a.date_grain as 'day' } : {}),
       ...(Number(a.limit) > 0 ? { limit: Math.min(Number(a.limit), 500) } : {}),
       ...(str(a.note, 300) ? { note: str(a.note, 300) } : {}),
+      ...(computed.length ? { computed } : {}),
     };
     this.vizs.push(spec);
     this.datasetsUsed.add(ds.id);
@@ -669,7 +798,9 @@ export class AgentRunner {
     const { session, ts, run, emit, signal } = this.input;
     const key = session.keys[provider];
     if (!key && !this.input.adapter) throw new LlmError('Chiave Anthropic non configurata per questo cliente.');
-    const model = session.models[provider] || DEFAULT_MODELS[provider];
+    // Modalità scelta in chat; per la bilanciata vale l'eventuale modello configurato nell'Hub.
+    const tier = this.input.tier ?? DEFAULT_TIER;
+    const model = (tier === DEFAULT_TIER && session.models[provider]) || TIER_MODELS[tier];
     const effort = this.input.effort && EFFORTS.includes(this.input.effort) ? this.input.effort : 'medium';
     const adapter = this.input.adapter ?? adapterFor(provider, key!, effort);
 

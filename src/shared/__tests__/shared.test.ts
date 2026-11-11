@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { chartData, joinTables, parseNumber, runQuery, toCsv, type Table } from '../engine';
+import { chartData, compileExpr, joinTables, normalizePath, parseNumber, runQuery, toCsv, type Table } from '../engine';
 import { inScope, parseScope, ScopeError } from '../scope';
 import { CLIENT_A_JSON } from '../../../netlify/functions/utils/__tests__/fixtures';
 
@@ -103,5 +103,66 @@ describe('motore dei dati', () => {
 
   it('esporta CSV con separatore italiano', () => {
     expect(toCsv({ columns: sessions.columns.slice(0, 2), rows: [{ date: '2026-10-01', channel: 'A;B' }] })).toBe('Data;Canale\n2026-10-01;"A;B"');
+  });
+});
+
+describe('incroci tra fonti diverse', () => {
+  const gsc: Table = {
+    columns: [
+      { key: 'query', label: 'Query', type: 'dimension' },
+      { key: 'pagina', label: 'Pagina', type: 'dimension' },
+      { key: 'clic', label: 'Clic', type: 'metric' },
+    ],
+    rows: [
+      { query: 'mutuo consap', pagina: 'tipi-di-mutuo/mutuo-consap', clic: 30 },
+      { query: 'consap requisiti', pagina: 'https://www.clientea.it/tipi-di-mutuo/mutuo-consap/', clic: 10 },
+      { query: 'clientea', pagina: '/', clic: 200 },
+      { query: 'pagina senza dati', pagina: 'nuova', clic: 5 },
+    ],
+  };
+  const ga4: Table = {
+    columns: [
+      { key: 'landing_page', label: 'Landing page', type: 'dimension' },
+      { key: 'sessions', label: 'Sessioni', type: 'metric' },
+      { key: 'key_events', label: 'Eventi chiave', type: 'metric' },
+    ],
+    rows: [
+      { landing_page: '/tipi-di-mutuo/mutuo-consap', sessions: 80, key_events: 8 },
+      { landing_page: '/tipi-di-mutuo/mutuo-consap?utm_source=x', sessions: 20, key_events: 2 },
+      { landing_page: '/', sessions: 400, key_events: 4 },
+    ],
+  };
+
+  it('lookup su colonne con nomi diversi, con percorsi normalizzati', () => {
+    const t = joinTables(gsc, ga4, [{ a: 'pagina', b: 'landing_page' }], { a: 'GSC', b: 'GA4' }, 'lookup');
+    expect(t.rows).toHaveLength(4);
+    expect(t.rows[0]).toMatchObject({ query: 'mutuo consap', clic: 30, sessions: 100, key_events: 10 });
+    expect(t.rows[1]).toMatchObject({ query: 'consap requisiti', sessions: 100 });
+    expect(t.rows[3]).toMatchObject({ query: 'pagina senza dati', sessions: null });
+  });
+
+  it('metrica calcolata: conversioni stimate per query', () => {
+    const t = joinTables(gsc, ga4, [{ a: 'pagina', b: 'landing_page' }], { a: 'GSC', b: 'GA4' }, 'lookup');
+    const r = runQuery(t, { computed: [{ key: 'conversioni_stimate', label: 'Conversioni stimate', expr: 'clic * key_events / sessions' }], sort: { key: 'conversioni_stimate', dir: 'desc' } });
+    expect(r.rows.map((x) => [x.query, x.conversioni_stimate])).toEqual([
+      ['mutuo consap', 3],
+      ['clientea', 2],
+      ['consap requisiti', 1],
+      ['pagina senza dati', null],
+    ]);
+    expect(() => compileExpr('clic * foo', ['clic'])).toThrow(/foo/);
+    expect(() => compileExpr('clic; alert(1)', ['clic'])).toThrow();
+    expect(compileExpr('(a + b) / 0', ['a', 'b'])({ a: 1, b: 2 })).toBeNull();
+  });
+
+  it('merge su date con nomi diversi', () => {
+    const a: Table = { columns: [{ key: 'date', label: 'Data', type: 'date' }, { key: 'sessions', label: 'Sessioni', type: 'metric' }], rows: [{ date: '2026-11-01', sessions: 10 }, { date: '2026-11-02', sessions: 20 }] };
+    const b: Table = { columns: [{ key: 'date_start', label: 'Data', type: 'date' }, { key: 'spend', label: 'Spesa', type: 'metric' }], rows: [{ date_start: '2026-11-02', spend: 5 }] };
+    const t = joinTables(a, b, [{ a: 'date', b: 'date_start' }], { a: 'GA4', b: 'Meta' });
+    expect(t.rows).toEqual([
+      { date: '2026-11-01', sessions: 10, spend: null },
+      { date: '2026-11-02', sessions: 20, spend: 5 },
+    ]);
+    expect(normalizePath('HTTPS://www.x.it/Mutui/?a=1#b')).toBe('/mutui');
   });
 });

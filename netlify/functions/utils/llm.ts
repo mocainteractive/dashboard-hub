@@ -1,5 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk';
-import type { AiProvider } from '../../../src/shared/types';
+import type { AiProvider, AiTier } from '../../../src/shared/types';
 
 /**
  * Adattatore Claude (Anthropic). La chiave è quella del cliente, dall'Hub,
@@ -64,15 +64,31 @@ export interface StepOptions {
 
 export class LlmError extends Error {}
 
-export const DEFAULT_MODEL = 'claude-opus-5-5';
+/** Modello per modalità: la bilanciata è il predefinito. */
+export const TIER_MODELS: Record<AiTier, string> = {
+  fast: 'claude-haiku-5-5',
+  balanced: 'claude-sonnet-5-5',
+  deep: 'claude-opus-5-5',
+};
+export const DEFAULT_TIER: AiTier = 'balanced';
+export const DEFAULT_MODEL = TIER_MODELS[DEFAULT_TIER];
 export const DEFAULT_MODELS: Record<AiProvider, string> = { anthropic: DEFAULT_MODEL };
+
+/** Il fallback lato server in caso di rifiuto non esiste per Haiku. */
+const supportsFallbacks = (model: string) => /opus-5|sonnet-5-5|fable|mythos/.test(model);
+
+/** Prompt di sistema: parte fissa (in cache per un'ora) e parte che cambia a ogni risposta. */
+export interface SystemPrompt {
+  stable: string;
+  dynamic: string;
+}
 
 export type Effort = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 export const EFFORTS: Effort[] = ['low', 'medium', 'high', 'xhigh', 'max'];
 
 export interface LlmAdapter {
   addUser(t: Transcript, text: string): void;
-  step(t: Transcript, system: string, tools: ToolDef[], opts?: StepOptions): Promise<Turn>;
+  step(t: Transcript, system: SystemPrompt, tools: ToolDef[], opts?: StepOptions): Promise<Turn>;
   addToolResults(t: Transcript, results: ToolResult[]): void;
 }
 
@@ -108,14 +124,16 @@ export function claudeAdapter(apiKey: string, effort: Effort = 'medium'): LlmAda
           {
             model: t.model,
             max_tokens: 32000,
-            system: [{ type: 'text', text: system }],
+            // Strumenti + parte fissa del sistema: prefisso stabile, letto dalla cache tra una domanda e l'altra.
+            system: [
+              { type: 'text', text: system.stable, cache_control: { type: 'ephemeral', ttl: '1h' } },
+              { type: 'text', text: system.dynamic },
+            ],
             tools: toAnthropicTools(tools),
             messages: t.messages as Anthropic.Beta.BetaMessageParam[],
             output_config: { effort },
             cache_control: { type: 'ephemeral' },
-            // Se il modello principale rifiuta, l'API riprova su un modello di riserva.
-            betas: ['server-side-fallback-2026-07-01'],
-            fallbacks: 'default',
+            ...(supportsFallbacks(t.model) ? { betas: ['server-side-fallback-2026-07-01'], fallbacks: 'default' as const } : {}),
           },
           { signal: opts.signal },
         );

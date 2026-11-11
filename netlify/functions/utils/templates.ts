@@ -1,9 +1,11 @@
+import { joinTables, runQuery } from '../../../src/shared/engine';
 import { accountsFor, scopedPlatforms } from '../../../src/shared/scope';
 import {
   PLATFORM_LABELS,
   type ClientScope,
   type Column,
   type Dashboard,
+  type QuerySpec,
   type DashboardMeta,
   type DashboardWidget,
   type Dataset,
@@ -407,6 +409,17 @@ export async function createDefaultDashboard(o: {
     }
   }
 
+  // Incrocio Search Console × GA4: query e conversioni stimate dalla landing page organica.
+  if (platforms.includes('ga4') && platforms.includes('search_console')) {
+    const cross = await buildQueryConversions({ ts, session, scope, gateway, from, to, now }).catch((e: Error) => ({ error: e.message }));
+    if ('error' in cross) report.push({ platform: 'search_console', title: 'Query × conversioni', ok: false, reason: cross.error, widgets: 0 });
+    else {
+      placer.newRow();
+      widgets.push({ id: newId(), spec: cross.spec, w: 3, layout: placer.place(12, 11) });
+      report.push({ platform: 'search_console', title: 'Query × conversioni', ok: true, widgets: 1 });
+    }
+  }
+
   const id = newId();
   const dashboard: Dashboard = {
     id,
@@ -421,4 +434,109 @@ export async function createDefaultDashboard(o: {
   await ts.set('dashboard', id, dashboard);
   await upsertIndex<DashboardMeta>(ts, 'dashboard', { id, title: dashboard.title, widgetCount: widgets.length, updatedAt: now, updatedBy: session.uname });
   return { dashboard, report };
+}
+
+async function saveDs(ts: TenantStore, ds: Dataset) {
+  await ts.set('dataset', ds.id, ds);
+  const { rows: _r, sourceCalls: _s, ...meta } = ds;
+  await upsertIndex(ts, 'dataset', meta);
+}
+
+/**
+ * GA4 non conosce le query: la chiave comune con Search Console è la pagina.
+ * Query × pagina (Search Console) + landing page organiche (GA4), incrociate
+ * sulla pagina; conversioni stimate = clic della query × eventi chiave della
+ * pagina / sessioni della pagina.
+ */
+async function buildQueryConversions(o: { ts: TenantStore; session: AppSession; scope: ClientScope; gateway: McpGateway; from: string; to: string; now: string }): Promise<{ spec: VizSpec }> {
+  const { ts, session, scope, gateway, from, to, now } = o;
+  const call = async (platform: McpPlatform, tool: string, args: Record<string, unknown>) => {
+    const policy = (await gateway.policies(platform)).find((p) => p.name === tool);
+    if (!policy) throw new Error(`strumento ${tool} non disponibile`);
+    const account = accountsFor(scope, platform)[0];
+    if (policy.scopeParam && account) args[policy.scopeParam] = account.id;
+    const res = await gateway.execute(platform, tool, args);
+    if (!res.ok) throw new Error(res.reason);
+    return res;
+  };
+  const [gsc, ga4] = await Promise.all([
+    call('search_console', 'get_query_page_combinations', { startDate: from, endDate: to, limit: 500 }),
+    call('ga4', 'get_custom_report', {
+      metrics: ['sessions', 'keyEvents'],
+      dimensions: ['landingPage'],
+      dimension_filter: { dimension: 'sessionDefaultChannelGroup', match_type: 'EXACT', value: 'Organic Search' },
+      start_date: from,
+      end_date: to,
+      limit: 1000,
+    }),
+  ]);
+  const gscTable = extractTables(gsc.text).find((t) => t.columns.some((c) => c.key === 'query') && t.columns.some((c) => c.key === 'pagina'));
+  const ga4Table = extractTables(ga4.text).find((t) => t.columns.some((c) => c.key === 'landing_page'));
+  if (!gscTable || !ga4Table) throw new Error('formato delle risposte non riconosciuto');
+
+  const ga4Ds: Dataset = {
+    id: newId(),
+    title: 'GA4, landing page organiche',
+    description: 'GA4: sessioni ed eventi chiave per landing page, solo canale Organic Search.',
+    platforms: ['ga4'],
+    accounts: ga4.accounts,
+    dateFrom: from,
+    dateTo: to,
+    columns: ga4Table.columns.map((c) => ({ ...c, label: { landing_page: 'Landing page', sessions: 'Sessioni organiche', key_events: 'Eventi chiave organici' }[c.key] ?? c.label })),
+    rows: ga4Table.rows,
+    rowCount: ga4Table.rows.length,
+    createdAt: now,
+    createdBy: session.uname,
+    updatedAt: now,
+    sourceCalls: [{ platform: 'ga4', tool: 'get_custom_report', args: ga4.args, fetchedAt: ga4.fetchedAt, fromCache: ga4.fromCache }],
+    sourceTable: ga4Table.label,
+    sourceKeys: ga4Table.columns.map((c) => c.key),
+  };
+  await saveDs(ts, ga4Ds);
+
+  const pairs = [{ a: 'pagina', b: 'landing_page' }];
+  const transform: QuerySpec = {
+    computed: [{ key: 'conversioni_stimate', label: 'Conversioni stimate', expr: 'clic * key_events / sessions', format: 'decimal' }],
+    sort: { key: 'clic', dir: 'desc' },
+    limit: 100,
+  };
+  const joined = runQuery(joinTables(gscTable, ga4Ds, pairs, { a: 'Search Console', b: 'GA4' }, 'lookup'), transform);
+  const keep = ['query', 'pagina', 'clic', 'impressioni', 'sessions', 'key_events', 'conversioni_stimate'].filter((k) => joined.columns.some((c) => c.key === k));
+  const labels: Record<string, string> = { query: 'Query', pagina: 'Pagina', clic: 'Clic', impressioni: 'Impressioni', sessions: 'Sessioni organiche pagina', key_events: 'Eventi chiave pagina', conversioni_stimate: 'Conversioni stimate' };
+  const columns: Column[] = keep.map((k) => ({ ...joined.columns.find((c) => c.key === k)!, label: labels[k] ?? k }));
+  const ds: Dataset = {
+    id: newId(),
+    title: 'Query × conversioni stimate (organico)',
+    description:
+      'Search Console query × pagina incrociate con le landing page organiche di GA4 sulla pagina. Conversioni stimate = clic della query × eventi chiave della pagina / sessioni organiche della pagina: ripartisce le conversioni della pagina tra le query in base ai clic.',
+    platforms: ['search_console', 'ga4'],
+    accounts: [...gsc.accounts, ...ga4.accounts],
+    dateFrom: from,
+    dateTo: to,
+    columns,
+    rows: joined.rows.map((r) => Object.fromEntries(keep.map((k) => [k, r[k] ?? null]))),
+    rowCount: joined.rows.length,
+    createdAt: now,
+    createdBy: session.uname,
+    updatedAt: now,
+    sourceCalls: [{ platform: 'search_console', tool: 'get_query_page_combinations', args: gsc.args, fetchedAt: gsc.fetchedAt, fromCache: gsc.fromCache }],
+    sourceTable: gscTable.label,
+    sourceKeys: gscTable.columns.map((c) => c.key),
+    join: { datasetId: ga4Ds.id, pairs, mode: 'lookup' },
+    transform,
+  };
+  await saveDs(ts, ds);
+  return {
+    spec: {
+      id: newId(),
+      title: 'Query × conversioni stimate (organico)',
+      type: 'table',
+      datasetId: ds.id,
+      x: 'query',
+      metrics: ['clic', 'conversioni_stimate', 'sessions', 'key_events'].filter((k) => keep.includes(k)),
+      filters: [],
+      sort: { key: 'clic', dir: 'desc' },
+      note: 'Stima: le conversioni organiche di ogni pagina sono ripartite tra le query in base ai clic.',
+    },
+  };
 }

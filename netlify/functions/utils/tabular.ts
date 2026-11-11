@@ -288,9 +288,20 @@ function labelColumn(title: string, isDate: boolean): string {
 }
 
 interface KvRow {
-  label: string | null;
+  /** Una o più etichette ("query" → pagina dà due colonne). */
+  labels: string[];
   pairs: [string, string][];
   line: number;
+}
+
+const unquote = (v: string) => v.trim().replace(/^["“«]|["”»]$/g, '').trim();
+
+/** Nomi delle colonne etichetta: una sola, oppure coppie come query → pagina. */
+function labelColumns(title: string, n: number, isDate: boolean): string[] {
+  if (n === 1) return [labelColumn(title, isDate)];
+  const t = title.toLowerCase();
+  if (n === 2 && t.includes('query') && (t.includes('pagin') || t.includes('page'))) return ['query', 'pagina'];
+  return Array.from({ length: n }, (_, i) => (i ? `elemento_${i + 1}` : 'elemento'));
 }
 
 /**
@@ -305,11 +316,13 @@ function kvTables(lines: string[], skip: Set<number>): ParsedTable[] {
   let sig = '';
   const close = () => {
     if (group.length >= 2 && tables.length < MAX_TABLES) {
-      const withLabel = group[0].label !== null;
-      const title = nearestTitle(lines, group[0].line - (withLabel && NUMBERED_RE.test(lines[group[0].line - 1] ?? '') ? 1 : 0));
-      const labelIsDate = withLabel && group.every((g) => g.label && toIsoDate(g.label));
-      const headers = [...(withLabel ? [labelColumn(title, labelIsDate)] : []), ...group[0].pairs.map(([k]) => k)];
-      const raw = group.map((g) => [...(withLabel ? [g.label] : []), ...g.pairs.map(([, v]) => v)]);
+      const nLabels = group[0].labels.length;
+      const title = nearestTitle(lines, group[0].line - (nLabels && NUMBERED_RE.test(lines[group[0].line - 1] ?? '') ? 1 : 0));
+      const labelIsDate = nLabels === 1 && group.every((g) => toIsoDate(g.labels[0]));
+      // Per i nomi delle colonne conta anche l'intestazione qualche riga sopra (es. "Combinazioni Query × Pagina").
+      const context = lines.slice(Math.max(0, group[0].line - 6), group[0].line).filter((l) => !NUMBERED_RE.test(l) && !l.includes('|')).join(' ');
+      const headers = [...labelColumns(`${title} ${context}`, nLabels, labelIsDate).slice(0, nLabels), ...group[0].pairs.map(([k]) => k)];
+      const raw = group.map((g) => [...g.labels, ...g.pairs.map(([, v]) => v)]);
       const { columns, rows } = inferColumns(headers, raw);
       tables.push({ label: title, columns, rows, totalRows: group.length });
     }
@@ -325,19 +338,19 @@ function kvTables(lines: string[], skip: Set<number>): ParsedTable[] {
       if (lines[i].trim() && !NUMBERED_RE.test(lines[i]) && group.length) close();
       continue;
     }
-    let label = parsed.label;
-    if (label === null) {
+    let labels: string[] = parsed.label !== null ? [parsed.label] : [];
+    if (!labels.length) {
       let k = i - 1;
       while (k >= 0 && !lines[k].trim()) k--;
       const m = k >= 0 ? lines[k].match(NUMBERED_RE) : null;
-      if (m) label = m[1].replace(/^["“«]|["”»]$/g, '').trim();
+      if (m) labels = m[1].split(/\s+(?:→|->)\s+/).map(unquote);
     }
-    const rowSig = parsed.pairs.map(([key]) => key).join('|') + (label !== null ? '#L' : '');
+    const rowSig = parsed.pairs.map(([key]) => key).join('|') + `#L${labels.length}`;
     if (rowSig !== sig) {
       close();
       sig = rowSig;
     }
-    group.push({ label, pairs: parsed.pairs, line: i });
+    group.push({ labels, pairs: parsed.pairs, line: i });
   }
   close();
   return tables;

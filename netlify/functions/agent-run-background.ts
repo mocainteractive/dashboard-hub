@@ -1,6 +1,6 @@
 import { getStore } from '@netlify/blobs';
 import type { Conversation, RunState } from '../../src/shared/types';
-import { runTurn } from './utils/chat-core';
+import { parseTier, runTurn } from './utils/chat-core';
 import { stopKey } from './utils/data-core';
 import { sessionSecret } from './utils/http';
 import { McpGateway } from './utils/mcp-gateway';
@@ -23,7 +23,7 @@ export default async (req: Request): Promise<Response> => {
   const session = openSession(bearer(req), secret);
   if (!session?.scope) return new Response(null, { status: 401 });
 
-  let body: { run_id?: unknown; refresh?: unknown };
+  let body: { run_id?: unknown; refresh?: unknown; tier?: unknown };
   try {
     body = JSON.parse((await req.text()) || '{}');
   } catch {
@@ -48,6 +48,7 @@ export default async (req: Request): Promise<Response> => {
     timeBudgetMs: TIME_BUDGET_MS,
     persistRun: (r) => ts.set('run', r.id, r),
     isCancelled: async () => !!(await ts.get('run', stopKey(run.id))),
+    tier: parseTier(body.tier),
   });
   return new Response(null, { status: 202 });
 };

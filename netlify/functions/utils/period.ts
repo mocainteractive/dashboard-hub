@@ -1,4 +1,4 @@
-import { parseNumber, runQuery, type Table } from '../../../src/shared/engine';
+import { joinTables, parseNumber, runQuery, type Table } from '../../../src/shared/engine';
 import type { Cell, Dataset, PeriodData, QuerySpec, Row } from '../../../src/shared/types';
 import type { McpGateway } from './mcp-gateway';
 import { extractTables, toIsoDate, type ParsedTable } from './tabular';
@@ -99,7 +99,7 @@ function neededKeys(ds: Dataset): string[] {
 
 /** Sceglie nella nuova risposta la tabella che corrisponde al dataset. */
 function pickTable(tables: ParsedTable[], ds: Dataset): ParsedTable | null {
-  const keys = neededKeys(ds);
+  const keys = ds.sourceKeys?.length ? ds.sourceKeys : neededKeys(ds);
   const complete = tables.filter((t) => keys.every((k) => t.columns.some((c) => c.key === k)));
   return complete.find((t) => t.label === ds.sourceTable) ?? complete[0] ?? null;
 }
@@ -161,6 +161,15 @@ export async function datasetForPeriod(
     source = table;
     fetchedAt = res.fetchedAt;
     fromCache = res.fromCache;
+  }
+
+  // Incrocio: anche l'altro lato si rilegge per lo stesso periodo.
+  if (ds.join) {
+    const other = depth < 3 && loadParent ? await loadParent(ds.join.datasetId) : null;
+    if (!other) throw new PeriodError("Il dataset incrociato non è più disponibile.");
+    const p = await datasetForPeriod(gateway, other, from, to, loadParent, depth + 1);
+    source = joinTables(source, { columns: p.columns, rows: p.rows }, ds.join.pairs, { a: ds.title, b: other.title }, ds.join.mode);
+    fromCache = fromCache && p.fromCache;
   }
 
   const result = ds.transform ? runQuery(source, forPeriod(ds.transform, source)) : source;

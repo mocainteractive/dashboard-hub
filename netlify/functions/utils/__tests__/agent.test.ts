@@ -170,9 +170,29 @@ describe('assistente', () => {
           },
         ],
       }),
+      () => ({
+        text: '',
+        stop: 'tool',
+        calls: [
+          {
+            id: 'w',
+            name: 'save_dataset',
+            args: {
+              title: 'Totali',
+              description: 'd',
+              manual_reason: 'totale stimato a mano dal testo',
+              columns: [{ key: 'campagna', label: 'Campagna', type: 'dimension' }, { key: 'spesa', label: 'Spesa', type: 'metric', format: 'currency' }],
+              rows: [['Tutte', '2.034,50']],
+            },
+          },
+        ],
+      }),
     ]);
     const msg = await new AgentRunner({ ...env, userText: 'x', refresh: false, deadline: Date.now() + 60000, persistRun: async () => undefined, adapter }).run('anthropic');
     expect(results[0][0]).toMatchObject({ isError: true });
+    // C'è la tabella t1: le righe a mano vengono rifiutate con l'indicazione della fonte.
+    expect(results[2][0]).toMatchObject({ isError: true });
+    expect(results[2][0].content).toContain('table_id t1');
     const ds = await env.ts.get<Dataset>('dataset', msg.datasetIds![0]);
     expect(ds?.rows).toEqual([{ campagna: 'Tutte', spesa: 2034.5 }]);
   });
@@ -220,7 +240,7 @@ describe('assistente', () => {
       () => ({
         text: '',
         stop: 'tool',
-        calls: [{ id: 'r', name: 'save_dataset', args: { title: 'Scritto a mano', description: 'd', columns: [{ key: 'campagna', label: 'Campagna', type: 'dimension' }, { key: 'spesa', label: 'Spesa', type: 'metric' }], rows: [['Prospecting', 1]] } }],
+        calls: [{ id: 'r', name: 'save_dataset', args: { title: 'Scritto a mano', description: 'd', manual_reason: 'versione precedente', columns: [{ key: 'campagna', label: 'Campagna', type: 'dimension' }, { key: 'spesa', label: 'Spesa', type: 'metric' }], rows: [['Prospecting', 1]] } }],
       }),
     ]);
     const first = await new AgentRunner({ ...env, userText: 'x', refresh: false, deadline: Date.now() + 60000, persistRun: async () => undefined, adapter: a1 }).run('anthropic');

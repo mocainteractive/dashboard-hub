@@ -18,7 +18,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { join, resolve } from 'node:path';
 import { SCOPE_CONFIG_KEY } from '../src/shared/scope';
 import type { StreamEvent } from '../src/shared/types';
-import { beginTurn, ChatError, runTurn, validateQuestion } from '../netlify/functions/utils/chat-core';
+import { beginTurn, ChatError, parseTier, runTurn, validateQuestion } from '../netlify/functions/utils/chat-core';
 import { handleData, type DataBody } from '../netlify/functions/utils/data-core';
 import { issueSession, type HubPayload } from '../netlify/functions/utils/issue-session';
 import { McpGateway } from '../netlify/functions/utils/mcp-gateway';
@@ -169,6 +169,7 @@ async function chatStream(req: IncomingMessage, res: ServerResponse, session: Ap
       timeBudgetMs: TIME_BUDGET_MS,
       emit,
       signal: abort.signal,
+      tier: parseTier(body.tier),
     });
     emit({ type: 'done', message });
     const u = message.usage;

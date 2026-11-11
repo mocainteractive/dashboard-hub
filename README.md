@@ -36,7 +36,8 @@ npm run poc:test                # in un altro terminale: test completo e report
 ```
 
 `npm run poc:test` usa Claude e i server MCP veri (ha un costo, di solito
-pochi dollari): crea la dashboard predefinita, rilegge ogni grafico per un
+meno di un dollaro con la modalità Bilanciata; `POC_TEST_TIERS=fast,balanced`
+confronta le modalità): crea la dashboard predefinita, rilegge ogni grafico per un
 altro periodo, fa una serie di domande in chat per ogni piattaforma del
 cliente, ripete una domanda per verificare la cache e scrive un report con
 esiti, tempi, token e costi in `.poc-data/report-<data>.md`.
@@ -52,9 +53,20 @@ esiti, tempi, token e costi in `.poc-data/report-<data>.md`.
 - Dashboard predefinita: un clic crea i grafici principali di ogni
   piattaforma (GA4, Search Console, Meta, Google Ads, Pinterest) senza AI,
   quindi senza costi Claude, come ricette filtrabili per periodo.
-- Costi: ogni risposta in chat mostra durata e costo stimato (token di
-  Claude ai prezzi di listino); la pagina Perimetro e cache mostra il totale
-  per cliente.
+- Costi: ogni risposta in chat mostra modello, durata e costo stimato (token
+  di Claude ai prezzi di listino); la pagina Perimetro e cache mostra il
+  totale per cliente. La chat ha tre modalità: Veloce (Claude Haiku 5.5),
+  Bilanciata (Claude Sonnet 5.5, predefinita), Approfondita (Claude Opus
+  5.5). Istruzioni e strumenti restano in cache per un'ora.
+- Incroci: anche tra colonne con nomi diversi (pagina e landing page, date
+  e date_start), con confronto normalizzato di indirizzi, maiuscole e date.
+  Due modi: unisci per valore (es. GA4 e Meta per data) o aggiungi colonne
+  (es. query Search Console + conversioni GA4 della pagina). Metriche
+  calcolate con formule sicure (es. clic * key_events / sessions). Gli
+  incroci salvati come ricetta si rileggono per periodo da entrambi i lati.
+  La dashboard predefinita include "Query × conversioni stimate".
+- Guida: scheda nell'app con gli argomenti principali, ciascuno in un popup
+  con prove dal vivo sui dati del cliente.
 - Dashboard a griglia libera (12 colonne): i widget si spostano trascinandoli
   dal titolo, si affiancano e si ridimensionano dall'angolo o dai bordi.
 - Il periodo scelto vale per tutti i widget. Ogni dataset è una ricetta:
