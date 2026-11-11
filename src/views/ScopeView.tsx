@@ -5,7 +5,8 @@ import { useData } from '../lib/DataContext';
 import { useMoca } from '../lib/MocaProvider';
 import { formatDateTime } from '../lib/format';
 import { SCOPE_CONFIG_KEY } from '../shared/scope';
-import { MCP_PLATFORMS, PLATFORM_LABELS, PROVIDER_LABELS, type CacheStats, type McpPlatform, type PlatformKey } from '../shared/types';
+import { MCP_PLATFORMS, PLATFORM_LABELS, PROVIDER_LABELS, type AiStats, type CacheStats, type McpPlatform, type PlatformKey } from '../shared/types';
+import { formatUsd } from '../shared/pricing';
 
 /** Perimetro del cliente (dal Data Lake), sicurezza e cache. */
 
@@ -44,6 +45,7 @@ export function ScopeView() {
   const { info, isInternal, demo } = useMoca();
   const { api } = useData();
   const [stats, setStats] = useState<CacheStats | null>(null);
+  const [ai, setAi] = useState<AiStats | null>(null);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -51,7 +53,10 @@ export function ScopeView() {
   useEffect(() => {
     api
       .info()
-      .then((r) => setStats(r.stats))
+      .then((r) => {
+        setStats(r.stats);
+        setAi(r.ai ?? null);
+      })
       .catch((e: Error) => setError(e.message));
   }, [api]);
 
@@ -219,6 +224,29 @@ export function ScopeView() {
             <p className="text-sm text-moca-text">Nessuna chiave AI configurata: aggiungi ANTHROPIC_API_KEY nella scheda del cliente.</p>
           )}
         </div>
+        {ai && ai.answers > 0 && (
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mt-5">
+            <div>
+              <p className="text-xs text-moca-gray uppercase tracking-wide">Risposte</p>
+              <p className="text-2xl font-semibold text-moca-black tabular-nums">{ai.answers.toLocaleString('it-IT')}</p>
+            </div>
+            <div>
+              <p className="text-xs text-moca-gray uppercase tracking-wide">Costo stimato totale</p>
+              <p className="text-2xl font-semibold text-moca-black tabular-nums">{formatUsd(ai.costUsd)}</p>
+            </div>
+            <div>
+              <p className="text-xs text-moca-gray uppercase tracking-wide">Costo medio per risposta</p>
+              <p className="text-2xl font-semibold text-moca-black tabular-nums">{formatUsd(ai.costUsd / ai.answers)}</p>
+            </div>
+            <div>
+              <p className="text-xs text-moca-gray uppercase tracking-wide">Token in cache</p>
+              <p className="text-2xl font-semibold text-moca-black tabular-nums">
+                {Math.round((ai.cacheRead / Math.max(1, ai.input + ai.cacheRead + ai.cacheWrite)) * 100)}%
+              </p>
+            </div>
+            <p className="col-span-full text-[11px] text-moca-gray">Stima ai prezzi di listino Anthropic; la fattura reale è nella Console Anthropic. I dati MCP non hanno costi a consumo per l'app.</p>
+          </div>
+        )}
       </Card>
     </div>
   );

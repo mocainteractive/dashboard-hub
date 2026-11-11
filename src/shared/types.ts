@@ -237,6 +237,30 @@ export interface RunEvent {
   text: string;
 }
 
+/** Consumo di Claude per una risposta (somma di tutti i passaggi). */
+export interface AiUsage {
+  model: string;
+  /** Chiamate al modello (passaggi del ciclo). */
+  steps: number;
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+  /** Stima in dollari ai prezzi di listino. */
+  costUsd: number;
+}
+
+/** Consumo cumulato di Claude per cliente. */
+export interface AiStats {
+  answers: number;
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+  costUsd: number;
+  lastAt?: string;
+}
+
 export interface ChatMessage {
   id: string;
   role: 'user' | 'assistant';
@@ -248,6 +272,9 @@ export interface ChatMessage {
   datasetIds?: string[];
   events?: RunEvent[];
   error?: boolean;
+  usage?: AiUsage;
+  /** Durata della risposta in millisecondi. */
+  durationMs?: number;
 }
 
 export interface ConversationMeta {

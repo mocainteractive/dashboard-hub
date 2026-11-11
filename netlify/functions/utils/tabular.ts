@@ -272,33 +272,101 @@ function parseKvLine(line: string): { label: string | null; pairs: [string, stri
   return pairs.length >= 2 ? { label, pairs } : null;
 }
 
+/** Riga "1. "testo"" che fa da etichetta alla riga di valori successiva (elenchi di Search Console). */
+const NUMBERED_RE = /^\s*\d{1,4}[.)]\s+(.+?)\s*$/;
+
+/** Nome della colonna etichetta, dedotto dal titolo dell'elenco. */
+function labelColumn(title: string, isDate: boolean): string {
+  if (isDate) return 'date';
+  const t = title.toLowerCase();
+  if (t.includes('query') || t.includes('ricerc')) return 'query';
+  if (t.includes('pagin') || t.includes('page')) return 'pagina';
+  if (t.includes('campagn')) return 'campagna';
+  if (t.includes('paes') || t.includes('countr')) return 'paese';
+  if (t.includes('dispositiv') || t.includes('device')) return 'dispositivo';
+  return 'elemento';
+}
+
+interface KvRow {
+  label: string | null;
+  pairs: [string, string][];
+  line: number;
+}
+
+/**
+ * Righe "etichetta — Chiave: valore | Chiave: valore", anche con l'etichetta
+ * sulla riga precedente in forma di elenco numerato. Le righe con le stesse
+ * chiavi formano una tabella (minimo 2 righe); righe di totale con chiavi
+ * diverse non si mescolano.
+ */
 function kvTables(lines: string[], skip: Set<number>): ParsedTable[] {
   const tables: ParsedTable[] = [];
-  let i = 0;
-  while (i < lines.length && tables.length < MAX_TABLES) {
-    const first = skip.has(i) ? null : parseKvLine(lines[i]);
-    if (!first) {
-      i++;
+  let group: KvRow[] = [];
+  let sig = '';
+  const close = () => {
+    if (group.length >= 2 && tables.length < MAX_TABLES) {
+      const withLabel = group[0].label !== null;
+      const title = nearestTitle(lines, group[0].line - (withLabel && NUMBERED_RE.test(lines[group[0].line - 1] ?? '') ? 1 : 0));
+      const labelIsDate = withLabel && group.every((g) => g.label && toIsoDate(g.label));
+      const headers = [...(withLabel ? [labelColumn(title, labelIsDate)] : []), ...group[0].pairs.map(([k]) => k)];
+      const raw = group.map((g) => [...(withLabel ? [g.label] : []), ...g.pairs.map(([, v]) => v)]);
+      const { columns, rows } = inferColumns(headers, raw);
+      tables.push({ label: title, columns, rows, totalRows: group.length });
+    }
+    group = [];
+    sig = '';
+  };
+
+  for (let i = 0; i < lines.length; i++) {
+    if (skip.has(i)) continue;
+    const parsed = parseKvLine(lines[i]);
+    if (!parsed) {
+      // Le righe vuote e le etichette numerate non interrompono un elenco.
+      if (lines[i].trim() && !NUMBERED_RE.test(lines[i]) && group.length) close();
       continue;
     }
-    const sig = first.pairs.map(([k]) => k).join('|') + (first.label ? '#L' : '');
-    const group = [first];
-    let j = i + 1;
-    for (; j < lines.length; j++) {
-      const p = skip.has(j) ? null : parseKvLine(lines[j]);
-      if (!p || p.pairs.map(([k]) => k).join('|') + (p.label ? '#L' : '') !== sig) break;
-      group.push(p);
+    let label = parsed.label;
+    if (label === null) {
+      let k = i - 1;
+      while (k >= 0 && !lines[k].trim()) k--;
+      const m = k >= 0 ? lines[k].match(NUMBERED_RE) : null;
+      if (m) label = m[1].replace(/^["“«]|["”»]$/g, '').trim();
     }
-    if (group.length >= 2) {
-      const labelIsDate = group.every((g) => g.label && toIsoDate(g.label));
-      const headers = [...(first.label ? [labelIsDate ? 'date' : 'label'] : []), ...first.pairs.map(([k]) => k)];
-      const raw = group.map((g) => [...(g.label ? [g.label] : []), ...g.pairs.map(([, v]) => v)]);
-      const { columns, rows } = inferColumns(headers, raw);
-      tables.push({ label: nearestTitle(lines, i), columns, rows, totalRows: group.length });
+    const rowSig = parsed.pairs.map(([key]) => key).join('|') + (label !== null ? '#L' : '');
+    if (rowSig !== sig) {
+      close();
+      sig = rowSig;
     }
-    i = j;
+    group.push({ label, pairs: parsed.pairs, line: i });
   }
+  close();
   return tables;
+}
+
+/**
+ * Blocco di totali "🔹 Chiave: valore", una metrica per riga (es. statistiche
+ * aggregate di Search Console): diventa una tabella di una riga.
+ */
+function totalsBlocks(lines: string[]): ParsedTable[] {
+  const out: ParsedTable[] = [];
+  let block: { key: string; value: string; line: number }[] = [];
+  const flush = () => {
+    if (block.length >= 3) {
+      const { columns, rows } = inferColumns(
+        block.map((b) => b.key),
+        [block.map((b) => b.value)],
+      );
+      if (columns.every((c) => c.type === 'metric')) out.push({ label: nearestTitle(lines, block[0].line) || 'totali', columns, rows, totalRows: 1 });
+    }
+    block = [];
+  };
+  for (let i = 0; i < lines.length; i++) {
+    const m = lines[i].match(/^\s*[^\p{L}\p{N}\s]*\s*([\p{L}][\p{L}\s.]{1,38}?)\s*:\s*([-+]?[\d.,]+\s*%?)\s*(\([^)]*\))?\s*$/u);
+    if (m && !lines[i].includes('|')) block.push({ key: m[1].trim(), value: m[2].trim(), line: i });
+    else if (lines[i].trim() || block.length >= 3) flush();
+  }
+  flush();
+  return out;
 }
 
 /** Tutte le tabelle riconoscibili nel testo di una risposta MCP. */
@@ -308,7 +376,8 @@ export function extractTables(text: string): ParsedTable[] {
   if (out.length) return out.slice(0, MAX_TABLES);
   const lines = text.split(/\r?\n/);
   const { tables, used } = pipeTables(lines);
-  return [...tables, ...kvTables(lines, used)].slice(0, MAX_TABLES);
+  // Prima le tabelle vere, poi gli elenchi, infine i blocchi di totali.
+  return [...tables, ...kvTables(lines, used), ...totalsBlocks(lines)].slice(0, MAX_TABLES);
 }
 
 /** Anteprima compatta di una tabella per il modello. */

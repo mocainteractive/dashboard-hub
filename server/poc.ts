@@ -171,7 +171,11 @@ async function chatStream(req: IncomingMessage, res: ServerResponse, session: Ap
       signal: abort.signal,
     });
     emit({ type: 'done', message });
-    console.log(`[poc] risposta in ${((Date.now() - t0) / 1000).toFixed(1)} s, ${run.events.filter((e) => e.kind === 'mcp').length} chiamate MCP, ${run.events.filter((e) => e.kind === 'cache').length} dalla cache`);
+    const u = message.usage;
+    console.log(
+      `[poc] risposta in ${((Date.now() - t0) / 1000).toFixed(1)} s, ${run.events.filter((e) => e.kind === 'mcp').length} chiamate MCP, ${run.events.filter((e) => e.kind === 'cache').length} dalla cache` +
+        (u ? `, ${u.steps} passaggi Claude, token ingresso ${u.input}+${u.cacheRead} cache+${u.cacheWrite} scritti, uscita ${u.output}, costo stimato ${u.costUsd.toFixed(4)} $` : ''),
+    );
   } catch (err) {
     console.error('[poc] chat', err);
     emit({ type: 'error', error: "Si è verificato un errore durante l'elaborazione, riprova." });

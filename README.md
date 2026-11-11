@@ -32,7 +32,14 @@ Claude: nessun deploy, nessun credito Netlify.
 npm ci
 cp .env.poc.example .env.poc   # compila cliente, chiave Anthropic e MCP_*_URL
 npm run poc                     # http://localhost:5180
+npm run poc:test                # in un altro terminale: test completo e report
 ```
+
+`npm run poc:test` usa Claude e i server MCP veri (ha un costo, di solito
+pochi dollari): crea la dashboard predefinita, rilegge ogni grafico per un
+altro periodo, fa una serie di domande in chat per ogni piattaforma del
+cliente, ripete una domanda per verificare la cache e scrive un report con
+esiti, tempi, token e costi in `.poc-data/report-<data>.md`.
 
 - Il cliente è il JSON di Onboarding Data Lake (`POC_CLIENT_FILE`): il
   perimetro e il guard sono gli stessi della versione su Netlify.
@@ -42,6 +49,12 @@ npm run poc                     # http://localhost:5180
   riceve un'anteprima e lavora sull'id (`t1`, `t2`), senza ricopiare i dati.
   Le chiamate MCP dello stesso passaggio partono in parallelo; con molti
   strumenti Claude carica solo quelli che servono (ricerca strumenti).
+- Dashboard predefinita: un clic crea i grafici principali di ogni
+  piattaforma (GA4, Search Console, Meta, Google Ads, Pinterest) senza AI,
+  quindi senza costi Claude, come ricette filtrabili per periodo.
+- Costi: ogni risposta in chat mostra durata e costo stimato (token di
+  Claude ai prezzi di listino); la pagina Perimetro e cache mostra il totale
+  per cliente.
 - Dashboard a griglia libera (12 colonne): i widget si spostano trascinandoli
   dal titolo, si affiancano e si ridimensionano dall'angolo o dai bordi.
 - Il periodo scelto vale per tutti i widget. Ogni dataset è una ricetta:

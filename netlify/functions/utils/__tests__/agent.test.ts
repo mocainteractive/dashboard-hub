@@ -75,7 +75,7 @@ describe('assistente', () => {
       ({ opts }) => {
         opts?.onText?.('Prospecting ');
         opts?.onText?.('assorbe la quota maggiore.');
-        return { text: 'Prospecting assorbe la quota maggiore.', calls: [], stop: 'end' };
+        return { text: 'Prospecting assorbe la quota maggiore.', calls: [], stop: 'end', usage: { model: 'claude-opus-5-5', input: 1000, output: 500, cacheRead: 10000, cacheWrite: 2000 } };
       },
     ]);
 
@@ -118,6 +118,11 @@ describe('assistente', () => {
     expect(events.filter((e) => e.type === 'text').map((e) => (e as { delta: string }).delta).join('')).toBe('Prospecting assorbe la quota maggiore.');
     expect(events.filter((e) => e.type === 'turn')).toHaveLength(3);
     expect(msg.text).toContain('Prospecting');
+
+    // Costo stimato: 1000 x 4 + 2000 x 5 + 10000 x 0,2 + 500 x 20 = 26.000 / 1.000.000 $.
+    expect(msg.usage).toMatchObject({ steps: 1, input: 1000, output: 500, cacheRead: 10000, cacheWrite: 2000 });
+    expect(msg.usage!.costUsd).toBeCloseTo(0.026, 6);
+    expect(await env.ts.get('stats', 'ai')).toMatchObject({ answers: 1, costUsd: msg.usage!.costUsd });
 
     // Nessun dato del cliente A nello spazio di un altro cliente.
     expect([...env.store.data.keys()].filter((k) => k.startsWith('t/cliente-b/'))).toEqual([]);

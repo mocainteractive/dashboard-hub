@@ -42,6 +42,79 @@ const META = JSON.stringify({
   ],
 });
 
+const GSC_QUERIES = `📊 Top 3 query di ricerca per https://www.clientea.it/ (2026-11-01 - 2026-11-07):
+
+1. "clientea"
+   Clic: 262 | Impressioni: 688 | CTR: 38.08% | Posizione: 1.1
+
+2. "mutuo consap"
+   Clic: 36 | Impressioni: 9,937 | CTR: 0.36% | Posizione: 6.7
+
+3. "intranet clientea"
+   Clic: 116 | Impressioni: 149 | CTR: 77.85% | Posizione: 1.0
+
+
+📌 Totale dalle 3 query visibili:
+   Clic: 414 | Impressioni: 10,774
+
+📍 Include fresh data (dati aggiornati di recente).`;
+
+const GSC_STATS = `📊 Statistiche REALI aggregate per https://www.clientea.it/ (2026-11-01 - 2026-11-07):
+
+🔹 Clic totali: 2,180
+🔹 Impressioni totali: 142,477
+🔹 CTR medio: 1.53%
+🔹 Posizione media: 7.1
+
+✅ Questi sono i dati EFFETTIVI che vedi in Google Search Console.`;
+
+const GADS = `resourceName|name|clicks|conversionsValue|conversions|costMicros|impressions
+customers/2504833999/campaigns/14292989695|IT-ita-SE-B-BRAND|9457|36200.838088666|87.543935|1658.94|24368
+customers/2504833999/campaigns/19026134532|IT-ita-PMax-CONVERSION|7713|11824.249114348|14.817147|1603.82|428965`;
+
+const META_INSIGHTS = JSON.stringify({
+  oggetto: 'act_1',
+  livello: 'account',
+  righe_totali: 2,
+  dati: [
+    { spend: 10.5, impressions: 1000, clicks: 20, date_start: '2026-10-01', date_stop: '2026-10-01' },
+    { spend: 12, impressions: 1200, clicks: 25, date_start: '2026-10-02', date_stop: '2026-10-02' },
+  ],
+  righe_mostrate: 2,
+  totali: { spend: 22.5, impressions: 2200, clicks: 45 },
+});
+
+describe('formati reali dei server Moca', () => {
+  it('Search Console, elenco numerato: etichetta sulla riga sopra, totale escluso', () => {
+    const tables = extractTables(GSC_QUERIES);
+    expect(tables).toHaveLength(1);
+    const [t] = tables;
+    expect(t.columns.map((c) => c.key)).toEqual(['query', 'clic', 'impressioni', 'ctr', 'posizione']);
+    expect(t.rows[1]).toEqual({ query: 'mutuo consap', clic: 36, impressioni: 9937, ctr: 0.36, posizione: 6.7 });
+    expect(t.rows).toHaveLength(3);
+  });
+
+  it('Search Console, statistiche aggregate: una riga di totali', () => {
+    const [t] = extractTables(GSC_STATS);
+    expect(t.rows).toEqual([{ clic_totali: 2180, impressioni_totali: 142477, ctr_medio: 1.53, posizione_media: 7.1 }]);
+    expect(t.columns.find((c) => c.key === 'ctr_medio')?.format).toBe('percent');
+  });
+
+  it('Google Ads, GAQL senza separatore', () => {
+    const [t] = extractTables(GADS);
+    expect(t.rows[0]).toMatchObject({ name: 'IT-ita-SE-B-BRAND', clicks: 9457, cost_micros: 1658.94 });
+    expect(t.columns.find((c) => c.key === 'cost_micros')?.format).toBe('currency');
+    expect(t.columns.find((c) => c.key === 'resource_name')?.type).toBe('dimension');
+  });
+
+  it('Meta, insights giornalieri: righe con data e riepilogo', () => {
+    const tables = extractTables(META_INSIGHTS);
+    expect(tables[0].label).toBe('dati');
+    expect(tables[0].columns.find((c) => c.key === 'date_start')?.type).toBe('date');
+    expect(tables.find((t) => t.label.startsWith('totali'))?.rows[0]).toMatchObject({ spend: 22.5 });
+  });
+});
+
 describe('tabelle dalle risposte MCP', () => {
   it('GA4: tabella con separatore, date AAAAMMGG, metriche numeriche', () => {
     const [t] = extractTables(GA4);

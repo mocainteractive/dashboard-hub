@@ -77,8 +77,8 @@ export function WidgetEditor({ initial, onSave, onClose, showWidth = true }: { i
         </>
       }
     >
-      <div className="grid lg:grid-cols-[minmax(0,360px)_1fr] gap-6">
-        <div className="space-y-4">
+      <div className="grid lg:grid-cols-[340px_minmax(0,1fr)] gap-6">
+        <div className="space-y-4 min-w-0">
           <Field label="Titolo">
             <Input value={spec.title} onChange={(e) => set({ title: e.target.value })} placeholder="Es. Sessioni per canale" maxLength={120} />
           </Field>
@@ -270,16 +270,16 @@ export function WidgetEditor({ initial, onSave, onClose, showWidth = true }: { i
           )}
         </div>
 
-        <div className="bg-moca-bg rounded-xl p-4 min-h-[320px]">
+        <div className="bg-moca-bg rounded-xl p-4 min-h-[320px] min-w-0 lg:sticky lg:top-0 self-start">
           <p className="text-xs font-semibold uppercase tracking-wide text-moca-gray mb-3">Anteprima</p>
-          <div className="bg-white rounded-xl shadow-card p-5">
+          <div className="bg-white rounded-xl shadow-card p-5 min-w-0 overflow-hidden">
             <h3 className="text-sm font-semibold uppercase tracking-wide text-moca-black mb-3">{spec.title || 'Grafico'}</h3>
             {loading ? (
               <div className="flex justify-center py-16">
                 <Spinner />
               </div>
             ) : table && valid ? (
-              <ChartView spec={spec} table={table} currency={info.scope?.currency ?? 'EUR'} height={260} />
+              <ChartView spec={spec} table={table} currency={info.scope?.currency ?? 'EUR'} height={300} fit />
             ) : (
               <p className="text-sm text-moca-gray py-16 text-center">Scegli asse X e almeno una metrica per vedere l'anteprima.</p>
             )}

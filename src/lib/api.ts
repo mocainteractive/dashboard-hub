@@ -1,4 +1,5 @@
 import type {
+  AiStats,
   CacheStats,
   ChatMessage,
   Conversation,
@@ -27,7 +28,7 @@ export interface RunStatusResponse {
 }
 
 export interface Api {
-  info(): Promise<{ info: SessionInfo; stats: CacheStats; canManageCache: boolean }>;
+  info(): Promise<{ info: SessionInfo; stats: CacheStats; ai?: AiStats | null; canManageCache: boolean }>;
   listDatasets(): Promise<DatasetMeta[]>;
   getDataset(id: string): Promise<Dataset>;
   deleteDataset(id: string): Promise<void>;
@@ -37,6 +38,8 @@ export interface Api {
   getDashboard(id: string): Promise<Dashboard>;
   saveDashboard(d: Partial<Dashboard>): Promise<Dashboard>;
   deleteDashboard(id: string): Promise<void>;
+  /** Dashboard predefinita con i grafici principali di ogni piattaforma. */
+  createDefaultDashboard(): Promise<{ dashboard: Dashboard; report: { platform: string; title: string; ok: boolean; reason?: string; widgets: number }[] }>;
   listConversations(): Promise<ConversationMeta[]>;
   getConversation(id: string): Promise<Conversation>;
   deleteConversation(id: string): Promise<void>;
@@ -144,6 +147,7 @@ export function createApi(appSession: string): Api {
     getDashboard: async (id) => (await data<{ dashboard: Dashboard }>('dashboards.get', { id })).dashboard,
     saveDashboard: async (dashboard) => (await data<{ dashboard: Dashboard }>('dashboards.save', { dashboard })).dashboard,
     deleteDashboard: async (id) => void (await data('dashboards.delete', { id })),
+    createDefaultDashboard: () => data('dashboards.createDefault'),
     listConversations: async () => (await data<{ conversations: ConversationMeta[] }>('conversations.list')).conversations,
     getConversation: async (id) => (await data<{ conversation: Conversation }>('conversations.get', { id })).conversation,
     deleteConversation: async (id) => void (await data('conversations.delete', { id })),

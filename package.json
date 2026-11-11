@@ -10,7 +10,8 @@
     "typecheck": "tsc --noEmit -p tsconfig.app.json && tsc -p tsconfig.functions.json",
     "lint": "eslint .",
     "test": "vitest run",
-    "poc": "tsx server/poc.ts"
+    "poc": "tsx server/poc.ts",
+    "poc:test": "tsx server/poc-test.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.137.0",

@@ -7,6 +7,7 @@ import { Button, EmptyState, ErrorNote, IconButton, Spinner, TextArea } from '..
 import { useData } from '../lib/DataContext';
 import { useMoca } from '../lib/MocaProvider';
 import { formatDateTime, newLocalId } from '../lib/format';
+import { formatUsd } from '../shared/pricing';
 import { PROVIDER_LABELS, type ChatMessage, type Conversation, type ConversationMeta, type RunEvent, type StreamEvent, type VizSpec } from '../shared/types';
 
 /** Chat con i dati: storico, avanzamento in tempo reale, grafici nella risposta. */
@@ -83,8 +84,13 @@ function Message({ m, onAdd }: { m: ChatMessage; onAdd: (v: VizSpec) => void }) 
         <div className="bg-white rounded-2xl rounded-tl-sm shadow-card px-4 py-3">
           <RichText text={m.text} />
           <Events events={m.events ?? []} />
-          <p className="text-[10px] text-moca-gray mt-2">
+          <p
+            className="text-[10px] text-moca-gray mt-2"
+            title={m.usage ? `${m.usage.model} · ${m.usage.steps} passaggi · ingresso ${m.usage.input.toLocaleString('it-IT')} · cache letta ${m.usage.cacheRead.toLocaleString('it-IT')} · cache scritta ${m.usage.cacheWrite.toLocaleString('it-IT')} · uscita ${m.usage.output.toLocaleString('it-IT')} token` : undefined}
+          >
             {m.provider ? PROVIDER_LABELS[m.provider] : 'Assistente'} · {formatDateTime(m.at)}
+            {m.durationMs ? ` · ${(m.durationMs / 1000).toLocaleString('it-IT', { maximumFractionDigits: 1 })} s` : ''}
+            {m.usage ? ` · costo stimato ${formatUsd(m.usage.costUsd)}` : ''}
           </p>
         </div>
         {!!m.vizs?.length && (

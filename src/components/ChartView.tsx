@@ -133,7 +133,7 @@ function Kpi({ spec, table, currency }: { spec: VizSpec; table: Table; currency:
   const dc = dateColumn(table);
   const spark = dc ? runQuery(table, { groupBy: [dc.key], metrics: data.series.map((s) => ({ key: s.key, agg: spec.agg })), dateGrain: 'week', sort: { key: dc.key, dir: 'asc' } }).rows : [];
   return (
-    <div className={`grid gap-4 ${data.series.length > 1 ? 'grid-cols-2' : 'grid-cols-1'}`}>
+    <div className={`grid gap-4 ${data.series.length > 1 ? 'grid-cols-[repeat(auto-fit,minmax(130px,1fr))]' : 'grid-cols-1'}`}>
       {data.series.map((s, i) => (
         <div key={s.key} className="min-w-0">
           {data.series.length > 1 && <p className="text-xs text-moca-gray uppercase tracking-wide truncate">{s.label}</p>}

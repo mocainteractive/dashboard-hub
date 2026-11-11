@@ -35,10 +35,19 @@ export interface ToolResult {
   isError?: boolean;
 }
 
+export interface TurnUsage {
+  model: string;
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+}
+
 export interface Turn {
   text: string;
   calls: ToolCall[];
   stop: 'tool' | 'end' | 'refusal' | 'max_tokens' | 'pause';
+  usage?: TurnUsage;
 }
 
 export interface Transcript {
@@ -119,6 +128,13 @@ export function claudeAdapter(apiKey: string, effort: Effort = 'medium'): LlmAda
       }
       // Contenuto restituito per intero (ragionamento e ricerca strumenti compresi), mai modificato.
       t.messages.push({ role: 'assistant', content: res.content });
+      const usage: TurnUsage = {
+        model: res.model || t.model,
+        input: res.usage?.input_tokens ?? 0,
+        output: res.usage?.output_tokens ?? 0,
+        cacheRead: res.usage?.cache_read_input_tokens ?? 0,
+        cacheWrite: res.usage?.cache_creation_input_tokens ?? 0,
+      };
       const text = res.content
         .filter((b): b is Anthropic.Beta.BetaTextBlock => b.type === 'text')
         .map((b) => b.text)
@@ -127,10 +143,10 @@ export function claudeAdapter(apiKey: string, effort: Effort = 'medium'): LlmAda
       const calls = res.content
         .filter((b): b is Anthropic.Beta.BetaToolUseBlock => b.type === 'tool_use')
         .map((b) => ({ id: b.id, name: b.name, args: (b.input && typeof b.input === 'object' ? b.input : {}) as Record<string, unknown> }));
-      if (res.stop_reason === 'refusal') return { text, calls: [], stop: 'refusal' };
-      if (res.stop_reason === 'max_tokens') return { text, calls: [], stop: 'max_tokens' };
-      if (res.stop_reason === 'pause_turn') return { text, calls: [], stop: 'pause' };
-      return { text, calls, stop: calls.length ? 'tool' : 'end' };
+      if (res.stop_reason === 'refusal') return { text, calls: [], stop: 'refusal', usage };
+      if (res.stop_reason === 'max_tokens') return { text, calls: [], stop: 'max_tokens', usage };
+      if (res.stop_reason === 'pause_turn') return { text, calls: [], stop: 'pause', usage };
+      return { text, calls, stop: calls.length ? 'tool' : 'end', usage };
     },
     addToolResults(t, results) {
       // Tutti i risultati in un solo messaggio utente (mantiene le chiamate in parallelo).

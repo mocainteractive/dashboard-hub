@@ -3,6 +3,8 @@ import { inScope, scopedPlatforms } from '../../../src/shared/scope';
 import {
   PLATFORM_LABELS,
   type AiProvider,
+  type AiStats,
+  type AiUsage,
   type Agg,
   type ChatMessage,
   type Column,
@@ -24,6 +26,7 @@ import {
 import { adapterFor, DEFAULT_MODELS, EFFORTS, LlmError, type Effort, type LlmAdapter, type ToolCall, type ToolDef, type ToolResult, type Transcript } from './llm';
 import { periodOfArgs } from './period';
 import { extractTables, previewTable, type ParsedTable } from './tabular';
+import { addUsage, emptyUsage, formatUsd } from '../../../src/shared/pricing';
 import { schemaForAi } from './mcp-guard';
 import type { McpGateway } from './mcp-gateway';
 import type { AppSession } from './session';
@@ -232,6 +235,7 @@ export class AgentRunner {
   private savedIds: string[] = [];
   private vizs: VizSpec[] = [];
   private tables = new Map<string, StagedTable>();
+  private usage: AiUsage | null = null;
 
   constructor(private readonly input: AgentInput) {}
 
@@ -677,6 +681,8 @@ export class AgentRunner {
     adapter.addUser(transcript, `${this.pendingRecap}${this.input.userText}`);
 
     await this.event('thinking', 'Analizzo la richiesta');
+    const started = Date.now();
+    this.usage = emptyUsage(model);
     let finalText = '';
     let steps = 0;
     let stopped = false;
@@ -702,6 +708,7 @@ export class AgentRunner {
           }
           throw err;
         }
+        if (turn.usage) this.usage = addUsage(this.usage, turn.usage);
         if (turn.stop === 'pause') continue;
         if (turn.stop === 'refusal') {
           finalText = turn.text || 'Non posso rispondere a questa richiesta.';
@@ -723,6 +730,22 @@ export class AgentRunner {
       else await ts.set('transcript', this.input.conversation.id, transcript);
     }
     if (stopped) finalText = this.vizs.length ? 'Risposta interrotta. Ecco i grafici preparati finora.' : 'Risposta interrotta.';
+    const usage = this.usage;
+    if (usage.steps) {
+      await this.event('info', `Costo stimato ${formatUsd(usage.costUsd)}: ${usage.steps} passaggi, ${(usage.input + usage.cacheRead + usage.cacheWrite).toLocaleString('it-IT')} token in ingresso, ${usage.output.toLocaleString('it-IT')} in uscita`);
+      // Consumo cumulato per cliente (pagina Perimetro e cache).
+      await ts
+        .update<AiStats>('stats', 'ai', { answers: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, costUsd: 0 }, (st) => ({
+          answers: st.answers + 1,
+          input: st.input + usage.input,
+          output: st.output + usage.output,
+          cacheRead: st.cacheRead + usage.cacheRead,
+          cacheWrite: st.cacheWrite + usage.cacheWrite,
+          costUsd: st.costUsd + usage.costUsd,
+          lastAt: new Date().toISOString(),
+        }))
+        .catch(() => undefined);
+    }
 
     return {
       id: newId(),
@@ -733,6 +756,8 @@ export class AgentRunner {
       vizs: this.vizs,
       datasetIds: [...new Set([...this.savedIds, ...this.vizs.map((v) => v.datasetId)])],
       events: run.events,
+      ...(usage.steps ? { usage } : {}),
+      durationMs: Date.now() - started,
     };
   }
 }

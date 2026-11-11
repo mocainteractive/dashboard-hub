@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { CalendarCheck, CalendarX, Check, Copy, GripVertical, LayoutDashboard, Pencil, Plus, Sparkles, Trash2 } from 'lucide-react';
+import { CalendarCheck, CalendarX, Check, Copy, GripVertical, LayoutDashboard, LayoutTemplate, Pencil, Plus, Sparkles, Trash2 } from 'lucide-react';
 import { FilterBar } from '../components/FilterBar';
 import { VizCard } from '../components/VizCard';
 import { WidgetEditor } from '../components/WidgetEditor';
@@ -40,7 +40,7 @@ function PeriodSummary({ statuses, titles }: { statuses: Record<string, PeriodSt
 }
 
 export function DashboardsView({ openId, onOpen, onGoChat }: { openId: string | null; onOpen: (id: string | null) => void; onGoChat: (prompt?: string) => void }) {
-  const { api, dashboards, refreshDashboards, datasets } = useData();
+  const { api, dashboards, refreshDashboards, refreshDatasets, datasets } = useData();
   const [current, setCurrent] = useState<Dashboard | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -106,6 +106,26 @@ export function DashboardsView({ openId, onOpen, onGoChat }: { openId: string | 
   // Cambio di scheda con un salvataggio in attesa: si salva subito.
   useEffect(() => () => void flush(), [flush]);
 
+  const [building, setBuilding] = useState(false);
+  const [buildNote, setBuildNote] = useState<string | null>(null);
+  const createDefault = async () => {
+    setBuilding(true);
+    setError(null);
+    setBuildNote(null);
+    try {
+      const { dashboard, report } = await api.createDefaultDashboard();
+      const failed = report.filter((r) => !r.ok);
+      if (failed.length) setBuildNote(`Non creati: ${failed.map((r) => `${r.title} (${r.reason})`).join('; ')}.`);
+      await Promise.all([refreshDashboards(), refreshDatasets()]);
+      setCurrent(dashboard);
+      onOpen(dashboard.id);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBuilding(false);
+    }
+  };
+
   const create = async () => {
     const d = await api.saveDashboard({ title: 'Nuova dashboard', widgets: [], filters: { dims: [] } });
     await refreshDashboards();
@@ -170,6 +190,9 @@ export function DashboardsView({ openId, onOpen, onGoChat }: { openId: string | 
         <Button className="w-full" onClick={create}>
           <Plus size={16} /> Nuova dashboard
         </Button>
+        <Button className="w-full" variant="secondary" onClick={createDefault} disabled={building}>
+          {building ? <Spinner size={4} /> : <LayoutTemplate size={16} />} Dashboard predefinita
+        </Button>
         <nav className="bg-white rounded-xl shadow-card p-2 space-y-1 max-h-[60vh] overflow-y-auto scrollbar-thin">
           {!dashboards.length && <p className="text-xs text-moca-gray p-2">Ancora nessuna dashboard.</p>}
           {dashboards.map((d) => (
@@ -192,6 +215,16 @@ export function DashboardsView({ openId, onOpen, onGoChat }: { openId: string | 
             <ErrorNote>{error}</ErrorNote>
           </div>
         )}
+        {building && (
+          <div className="mb-4 bg-white rounded-xl shadow-card px-4 py-3 flex items-center gap-3 text-sm text-moca-text">
+            <Spinner size={4} /> Leggo i dati principali di ogni piattaforma e preparo i grafici.
+          </div>
+        )}
+        {buildNote && !building && (
+          <div className="mb-4">
+            <ErrorNote>{buildNote}</ErrorNote>
+          </div>
+        )}
         {loading && (
           <div className="flex justify-center py-24">
             <Spinner />
@@ -204,8 +237,11 @@ export function DashboardsView({ openId, onOpen, onGoChat }: { openId: string | 
               title="Crea la prima dashboard"
               text="Le dashboard raccolgono i grafici dei dati del cliente. Puoi costruirle a mano dai dataset oppure chiedere all'assistente AI di preparare le visualizzazioni."
               action={
-                <div className="flex gap-2 justify-center">
-                  <Button onClick={create}>
+                <div className="flex flex-wrap gap-2 justify-center">
+                  <Button onClick={createDefault} disabled={building}>
+                    {building ? <Spinner size={4} /> : <LayoutTemplate size={16} />} Crea la dashboard predefinita
+                  </Button>
+                  <Button variant="secondary" onClick={create}>
                     <Plus size={16} /> Nuova dashboard
                   </Button>
                   <Button variant="secondary" onClick={() => onGoChat()}>

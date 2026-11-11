@@ -1,5 +1,6 @@
 import { inScope, scopedPlatforms } from '../../../src/shared/scope';
 import type {
+  AiStats,
   CacheStats,
   Conversation,
   ConversationMeta,
@@ -15,7 +16,8 @@ import type {
 } from '../../../src/shared/types';
 import { GRID_COLS } from '../../../src/shared/types';
 import { fail, ok } from './http';
-import { McpGateway } from './mcp-gateway';
+import { McpGateway, todayIn } from './mcp-gateway';
+import { createDefaultDashboard } from './templates';
 import { datasetForPeriod, PeriodError, validPeriod } from './period';
 import { serverFor } from './mcp-client';
 import { INTERNAL_ROLES, type AppSession } from './session';
@@ -106,7 +108,8 @@ export async function handleData(body: DataBody, session: AppSession, ts: Tenant
   switch (body.action) {
     case 'info': {
       const stats = (await ts.get<CacheStats>('stats', 'mcp')) ?? { hits: 0, misses: 0, blocked: 0 };
-      return ok({ info: sessionInfoOf(session), stats, canManageCache: isInternal(session) });
+      const ai = await ts.get<AiStats>('stats', 'ai');
+      return ok({ info: sessionInfoOf(session), stats, ai, canManageCache: isInternal(session) });
     }
 
     // --- Dataset ---
@@ -189,6 +192,18 @@ export async function handleData(body: DataBody, session: AppSession, ts: Tenant
       await upsertIndex<DashboardMeta>(ts, 'dashboard', { id, title: dashboard.title, widgetCount: widgets.length, updatedAt: now, updatedBy: session.uname });
       return ok({ dashboard });
     }
+    case 'dashboards.createDefault': {
+      if (!scope) return fail(400, session.scopeError ?? 'Perimetro del cliente non configurato.');
+      // Ultimi 30 giorni, oggi compreso (come la scorciatoia della barra dei filtri).
+      const to = todayIn(scope.timezone || 'Europe/Rome', new Date());
+      const d = new Date(`${to}T00:00:00Z`);
+      d.setUTCDate(d.getUTCDate() - 29);
+      const from = d.toISOString().slice(0, 10);
+      const result = await createDefaultDashboard({ ts, session, scope, gateway: new McpGateway(ts, rawStore, scope), from, to, hasServer: (p) => !!serverFor(p) });
+      if (!result.dashboard.widgets.length) return fail(422, `Nessun grafico creato: ${result.report.map((r) => `${r.title}: ${r.reason}`).join('; ') || 'nessuna piattaforma interrogabile'}.`);
+      return ok(result as unknown as Record<string, unknown>);
+    }
+
     case 'dashboards.delete': {
       if (!validId(body.id)) return fail(400, 'Identificativo non valido');
       if (!isInternal(session)) {

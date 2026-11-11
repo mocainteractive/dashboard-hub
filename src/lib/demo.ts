@@ -342,6 +342,9 @@ export function createDemoApi(): Api {
       }
       return { status: done ? 'done' : 'running', events: run.events.slice(after), total: run.events.length, message: run.message ?? null };
     },
+    createDefaultDashboard: async () => {
+      throw new Error('Nella demo la dashboard predefinita non è disponibile: usa il POC con i server MCP.');
+    },
     datasetForPeriod: async () => {
       throw new Error('Nella demo i dati non si rileggono dai server.');
     },
