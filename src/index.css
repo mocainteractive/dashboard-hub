@@ -23,3 +23,17 @@ body {
   background: #d4d6da;
   border-radius: 3px;
 }
+
+/* Griglia della dashboard: segnaposto e maniglie nei colori Moca. */
+.react-grid-item.react-grid-placeholder {
+  background: #e52217;
+  opacity: 0.12;
+  border-radius: 0.75rem;
+}
+.react-grid-item > .react-resizable-handle {
+  opacity: 0;
+  transition: opacity 150ms;
+}
+.react-grid-item:hover > .react-resizable-handle {
+  opacity: 1;
+}

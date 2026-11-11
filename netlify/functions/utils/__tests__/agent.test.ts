@@ -206,4 +206,43 @@ describe('assistente', () => {
     expect(api.at(-1)).toEqual({ type: 'tool_search_tool_bm25_20251119', name: 'tool_search_tool_bm25' });
     expect(api.find((t) => 'name' in t && t.name === 'meta__report_0')).toMatchObject({ defer_loading: true });
   });
+
+  it('filtra sul server con table_id e sostituisce un dataset scritto a mano mantenendo le colonne', async () => {
+    const env = setup();
+    // Dataset vecchio, scritto a mano: non filtrabile per periodo.
+    const { adapter: a1 } = scriptedAdapter([
+      () => ({ text: '', stop: 'tool', calls: [{ id: 'm', name: 'meta__get_account_overview', args: {} }] }),
+      () => ({
+        text: '',
+        stop: 'tool',
+        calls: [{ id: 'r', name: 'save_dataset', args: { title: 'Scritto a mano', description: 'd', columns: [{ key: 'campagna', label: 'Campagna', type: 'dimension' }, { key: 'spesa', label: 'Spesa', type: 'metric' }], rows: [['Prospecting', 1]] } }],
+      }),
+    ]);
+    const first = await new AgentRunner({ ...env, userText: 'x', refresh: false, deadline: Date.now() + 60000, persistRun: async () => undefined, adapter: a1 }).run('anthropic');
+    const oldId = first.datasetIds![0];
+
+    const conversation = { ...env.conversation, id: 'conv2' };
+    const { adapter: a2, results } = scriptedAdapter([
+      () => ({ text: '', stop: 'tool', calls: [{ id: 'm', name: 'meta__get_account_overview', args: { date_preset: 'last_7d' } }] }),
+      () => ({
+        text: '',
+        stop: 'tool',
+        calls: [
+          // Colonne diverse: rifiutato.
+          { id: 'bad', name: 'save_dataset', args: { table_id: 't1', title: 'x', description: 'd', columns: [{ key: 'campaign_name' }], replaces_dataset_id: oldId } },
+          { id: 'ok', name: 'save_dataset', args: { table_id: 't1', title: 'Campagne non retargeting', description: 'd', filters: [{ column: 'campaign_name', op: 'not_contains', value: ['retarget'] }], columns: [{ key: 'campagna', source: 'campaign_name', label: 'Campagna' }, { key: 'spesa', source: 'spend', label: 'Spesa' }], replaces_dataset_id: oldId } },
+        ],
+      }),
+    ]);
+    const msg = await new AgentRunner({ ...env, conversation, userText: 'x', refresh: false, deadline: Date.now() + 60000, persistRun: async () => undefined, adapter: a2 }).run('anthropic');
+    expect(results[1][0]).toMatchObject({ isError: true });
+    expect(results[1][0].content).toContain('Mancano: campagna, spesa');
+    const fresh = await env.ts.get<Dataset>('dataset', msg.datasetIds![0]);
+    expect(fresh?.rows).toEqual([{ campagna: 'Prospecting', spesa: 1234.5 }]);
+    expect(fresh?.renames).toEqual({ campagna: 'campaign_name', spesa: 'spend' });
+    expect(fresh?.transform?.filters?.[0]).toMatchObject({ op: 'not_contains' });
+    expect(fresh?.sourceTable).toBe('campaigns');
+    const old = await env.ts.get<Dataset>('dataset', oldId);
+    expect(old?.replacedBy).toBe(fresh?.id);
+  });
 });

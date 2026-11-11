@@ -33,6 +33,7 @@ export default function App() {
   const { info } = useMoca();
   const [tab, setTabState] = useState<Tab>(readTab);
   const [dashboardId, setDashboardId] = useState<string | null>(null);
+  const [chatPrompt, setChatPrompt] = useState<string | null>(null);
   const setTab = (t: Tab) => {
     setTabState(t);
     try {
@@ -71,8 +72,17 @@ export default function App() {
               <MissingScope reason={info.scopeError} />
             </div>
           )}
-          {tab === 'dashboard' && <DashboardsView openId={dashboardId} onOpen={setDashboardId} onGoChat={() => setTab('chat')} />}
-          {tab === 'chat' && <ChatView />}
+          {tab === 'dashboard' && (
+            <DashboardsView
+              openId={dashboardId}
+              onOpen={setDashboardId}
+              onGoChat={(prompt) => {
+                setChatPrompt(prompt ?? null);
+                setTab('chat');
+              }}
+            />
+          )}
+          {tab === 'chat' && <ChatView initialText={chatPrompt} onInitialUsed={() => setChatPrompt(null)} />}
           {tab === 'data' && <DataView onGoChat={() => setTab('chat')} />}
           {tab === 'scope' && <ScopeView />}
         </main>

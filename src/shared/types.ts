@@ -104,6 +104,14 @@ export interface DatasetMeta {
    * periodo con la stessa chiamata.
    */
   sourceTable?: string;
+  /** Dataset da cui deriva (filtrato o aggregato dal server, sempre rileggibile se lo è il padre). */
+  derivedFrom?: string;
+  /** Trasformazione applicata alla tabella d'origine o al dataset padre. */
+  transform?: QuerySpec;
+  /** Colonne rinominate: chiave nel dataset -> colonna d'origine. */
+  renames?: Record<string, string>;
+  /** Sostituito da un dataset rileggibile con le stesse colonne: i grafici usano quello. */
+  replacedBy?: string;
 }
 
 /** Dati di un dataset riletti per il periodo della dashboard. */
@@ -132,7 +140,7 @@ export interface Dataset extends DatasetMeta {
   sourceCalls: SourceCall[];
 }
 
-export type FilterOp = 'eq' | 'neq' | 'in' | 'contains' | 'gt' | 'gte' | 'lt' | 'lte' | 'between';
+export type FilterOp = 'eq' | 'neq' | 'in' | 'not_in' | 'contains' | 'not_contains' | 'gt' | 'gte' | 'lt' | 'lte' | 'between';
 
 export interface Filter {
   column: string;
@@ -178,11 +186,22 @@ export interface VizSpec {
   note?: string;
 }
 
+/** Posizione e dimensione nella griglia della dashboard (12 colonne, righe da 30 px). */
+export interface WidgetLayout {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+export const GRID_COLS = 12;
+
 export interface DashboardWidget {
   id: string;
   spec: VizSpec;
-  /** Colonne occupate su 3. */
+  /** Larghezza iniziale su 3 (un terzo, due terzi, riga intera), per i widget senza layout. */
   w: 1 | 2 | 3;
+  layout?: WidgetLayout;
 }
 
 export interface DashboardFilters {

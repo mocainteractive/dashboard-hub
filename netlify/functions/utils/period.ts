@@ -1,5 +1,5 @@
-import { parseNumber } from '../../../src/shared/engine';
-import type { Cell, Dataset, PeriodData, Row } from '../../../src/shared/types';
+import { parseNumber, runQuery, type Table } from '../../../src/shared/engine';
+import type { Cell, Dataset, PeriodData, QuerySpec, Row } from '../../../src/shared/types';
 import type { McpGateway } from './mcp-gateway';
 import { extractTables, toIsoDate, type ParsedTable } from './tabular';
 
@@ -71,11 +71,43 @@ export function argsForPeriod(args: Record<string, unknown>, schemaProps: Record
   return out;
 }
 
+/** Periodo (prima e ultima data) indicato negli argomenti di una chiamata. */
+export function periodOfArgs(args: Record<string, unknown>): { from?: string; to?: string } {
+  const dates: string[] = [];
+  const walk = (v: unknown) => {
+    if (typeof v === 'string') for (const m of v.matchAll(/\b(\d{4}-\d{2}-\d{2})\b/g)) dates.push(m[1]);
+    else if (Array.isArray(v)) v.forEach(walk);
+    else if (v && typeof v === 'object') Object.values(v).forEach(walk);
+  };
+  walk(args);
+  dates.sort();
+  return dates.length ? { from: dates[0], to: dates[dates.length - 1] } : {};
+}
+
+/** Colonne che la tabella di partenza deve avere per riprodurre il dataset. */
+function neededKeys(ds: Dataset): string[] {
+  const t = ds.transform;
+  if (!t) return ds.columns.map((c) => ds.renames?.[c.key] ?? c.key);
+  const keys = new Set<string>();
+  if (t.groupBy?.length || t.metrics?.length) {
+    t.groupBy?.forEach((k) => keys.add(k));
+    t.metrics?.forEach((m) => m.agg !== 'count' && keys.add(m.key));
+  } else ds.columns.forEach((c) => keys.add(ds.renames?.[c.key] ?? c.key));
+  t.filters?.forEach((f) => keys.add(f.column));
+  return [...keys];
+}
+
 /** Sceglie nella nuova risposta la tabella che corrisponde al dataset. */
 function pickTable(tables: ParsedTable[], ds: Dataset): ParsedTable | null {
-  const keys = ds.columns.map((c) => c.key);
+  const keys = neededKeys(ds);
   const complete = tables.filter((t) => keys.every((k) => t.columns.some((c) => c.key === k)));
   return complete.find((t) => t.label === ds.sourceTable) ?? complete[0] ?? null;
+}
+
+/** La trasformazione senza i filtri sulle date: il periodo lo decide la dashboard. */
+function forPeriod(t: QuerySpec, source: Table): QuerySpec {
+  const dateKeys = new Set(source.columns.filter((c) => c.type === 'date').map((c) => c.key));
+  return { ...t, filters: (t.filters ?? []).filter((f) => !dateKeys.has(f.column)) };
 }
 
 function cast(v: Cell, type: string): Cell {
@@ -95,19 +127,43 @@ export function validPeriod(from: unknown, to: unknown): { from: string; to: str
 }
 
 /** Dati del dataset per il periodo [from, to]. */
-export async function datasetForPeriod(gateway: McpGateway, ds: Dataset, from: string, to: string): Promise<PeriodData> {
-  if (!ds.sourceTable || ds.sourceCalls.length !== 1) throw new PeriodError('Questo dataset non si può rileggere per un altro periodo.');
-  const call = ds.sourceCalls[0];
-  const policy = (await gateway.policies(call.platform)).find((p) => p.name === call.tool);
-  if (!policy) throw new PeriodError('Strumento non più disponibile.');
-  const args = argsForPeriod(call.args, policy.properties, from, to);
-  if (!args) throw new PeriodError('Lo strumento usato non permette di scegliere il periodo.');
+export async function datasetForPeriod(
+  gateway: McpGateway,
+  ds: Dataset,
+  from: string,
+  to: string,
+  loadParent?: (id: string) => Promise<Dataset | null>,
+  depth = 0,
+): Promise<PeriodData> {
+  let source: Table;
+  let fetchedAt: string;
+  let fromCache: boolean;
 
-  const res = await gateway.execute(call.platform, call.tool, args);
-  if (!res.ok) throw new PeriodError(res.reason);
-  const table = pickTable(extractTables(res.text), ds);
-  if (!table) throw new PeriodError('La risposta del server non contiene più la stessa tabella.');
+  if (ds.derivedFrom) {
+    // Dataset derivato: si rilegge il padre e si riapplica la trasformazione.
+    const parent = depth < 3 && loadParent ? await loadParent(ds.derivedFrom) : null;
+    if (!parent) throw new PeriodError('Il dataset di partenza non è più disponibile.');
+    const p = await datasetForPeriod(gateway, parent, from, to, loadParent, depth + 1);
+    source = { columns: p.columns, rows: p.rows };
+    fetchedAt = p.fetchedAt;
+    fromCache = p.fromCache;
+  } else {
+    if (!ds.sourceTable || ds.sourceCalls.length !== 1) throw new PeriodError('Questo dataset è stato scritto a mano in chat e non si può rileggere per un altro periodo.');
+    const call = ds.sourceCalls[0];
+    const policy = (await gateway.policies(call.platform)).find((p) => p.name === call.tool);
+    if (!policy) throw new PeriodError('Strumento non più disponibile.');
+    const args = argsForPeriod(call.args, policy.properties, from, to);
+    if (!args) throw new PeriodError('Lo strumento usato non permette di scegliere il periodo.');
+    const res = await gateway.execute(call.platform, call.tool, args);
+    if (!res.ok) throw new PeriodError(res.reason);
+    const table = pickTable(extractTables(res.text), ds);
+    if (!table) throw new PeriodError('La risposta del server non contiene più la stessa tabella.');
+    source = table;
+    fetchedAt = res.fetchedAt;
+    fromCache = res.fromCache;
+  }
 
-  const rows: Row[] = table.rows.map((r) => Object.fromEntries(ds.columns.map((c) => [c.key, cast(r[c.key] ?? null, c.type)])));
-  return { columns: ds.columns, rows, dateFrom: from, dateTo: to, fetchedAt: res.fetchedAt, fromCache: res.fromCache };
+  const result = ds.transform ? runQuery(source, forPeriod(ds.transform, source)) : source;
+  const rows: Row[] = result.rows.map((r) => Object.fromEntries(ds.columns.map((c) => [c.key, cast(r[ds.renames?.[c.key] ?? c.key] ?? null, c.type)])));
+  return { columns: ds.columns, rows, dateFrom: from, dateTo: to, fetchedAt, fromCache };
 }

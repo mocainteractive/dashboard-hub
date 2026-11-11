@@ -1,37 +1,19 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
-import { CalendarCheck, CalendarX, Check, Copy, GripVertical, LayoutDashboard, MoveHorizontal, Pencil, Plus, Sparkles, Trash2 } from 'lucide-react';
-import { closestCenter, DndContext, KeyboardSensor, PointerSensor, TouchSensor, useSensor, useSensors, type DragEndEvent } from '@dnd-kit/core';
-import { arrayMove, rectSortingStrategy, SortableContext, sortableKeyboardCoordinates, useSortable } from '@dnd-kit/sortable';
-import { CSS } from '@dnd-kit/utilities';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { CalendarCheck, CalendarX, Check, Copy, GripVertical, LayoutDashboard, Pencil, Plus, Sparkles, Trash2 } from 'lucide-react';
 import { FilterBar } from '../components/FilterBar';
 import { VizCard } from '../components/VizCard';
 import { WidgetEditor } from '../components/WidgetEditor';
+import { WidgetGrid } from '../components/WidgetGrid';
+import { COLS_FOR_W, DRAG_CLASS } from '../lib/grid';
 import { Button, EmptyState, ErrorNote, IconButton, Input, Spinner } from '../components/ui';
 import { useData } from '../lib/DataContext';
 import { formatDateTime, newLocalId } from '../lib/format';
-import type { Cell, Dashboard, DashboardWidget, PeriodStatus } from '../shared/types';
+import { GRID_COLS, type Cell, type Dashboard, type DashboardWidget, type PeriodStatus, type WidgetLayout } from '../shared/types';
 
 /** Dashboard del cliente: elenco, filtri globali, griglia di widget, editor. */
 
-const SPAN: Record<1 | 2 | 3, string> = { 1: 'lg:col-span-1', 2: 'lg:col-span-2', 3: 'lg:col-span-3' };
-const NEXT_W: Record<1 | 2 | 3, 1 | 2 | 3> = { 1: 2, 2: 3, 3: 1 };
-const W_LABEL: Record<1 | 2 | 3, string> = { 1: 'un terzo', 2: 'due terzi', 3: 'tutta la riga' };
-
-type HandleProps = Record<string, unknown>;
-
-/** Widget trascinabile: si sposta con la maniglia, così il clic sul grafico resta un filtro. */
-function SortableWidget({ id, className, children }: { id: string; className: string; children: (handle: HandleProps, dragging: boolean) => ReactNode }) {
-  const { attributes, listeners, setNodeRef, setActivatorNodeRef, transform, transition, isDragging } = useSortable({ id });
-  return (
-    <div
-      ref={setNodeRef}
-      className={`${className} min-w-0 ${isDragging ? 'relative z-20 opacity-80 ring-2 ring-moca-red rounded-xl' : ''}`}
-      style={{ transform: CSS.Translate.toString(transform), transition }}
-    >
-      {children({ ...attributes, ...listeners, ref: setActivatorNodeRef }, isDragging)}
-    </div>
-  );
-}
+/** Ultima versione di ogni dashboard modificata in questa sessione (sopravvive al cambio di scheda). */
+const drafts = new Map<string, Dashboard>();
 
 /** Riepilogo: a quanti widget è applicato il periodo scelto. */
 function PeriodSummary({ statuses, titles }: { statuses: Record<string, PeriodStatus | null>; titles: Record<string, string> }) {
@@ -57,7 +39,7 @@ function PeriodSummary({ statuses, titles }: { statuses: Record<string, PeriodSt
   );
 }
 
-export function DashboardsView({ openId, onOpen, onGoChat }: { openId: string | null; onOpen: (id: string | null) => void; onGoChat: () => void }) {
+export function DashboardsView({ openId, onOpen, onGoChat }: { openId: string | null; onOpen: (id: string | null) => void; onGoChat: (prompt?: string) => void }) {
   const { api, dashboards, refreshDashboards, datasets } = useData();
   const [current, setCurrent] = useState<Dashboard | null>(null);
   const [loading, setLoading] = useState(false);
@@ -67,11 +49,6 @@ export function DashboardsView({ openId, onOpen, onGoChat }: { openId: string | 
   const [renaming, setRenaming] = useState(false);
   const [periods, setPeriods] = useState<Record<string, PeriodStatus | null>>({});
   const saveTimer = useRef<number>();
-  const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
-    useSensor(TouchSensor, { activationConstraint: { delay: 150, tolerance: 6 } }),
-    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
-  );
 
   const selectedId = openId ?? dashboards[0]?.id ?? null;
 
@@ -81,6 +58,12 @@ export function DashboardsView({ openId, onOpen, onGoChat }: { openId: string | 
       return;
     }
     if (current?.id === selectedId) return;
+    // Modifiche fatte in questa sessione: si riparte da lì, senza aspettare il server.
+    const draft = drafts.get(selectedId);
+    if (draft) {
+      setCurrent(draft);
+      return;
+    }
     setLoading(true);
     setError(null);
     api
@@ -91,25 +74,37 @@ export function DashboardsView({ openId, onOpen, onGoChat }: { openId: string | 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedId, api]);
 
+  const pending = useRef<Dashboard | null>(null);
+  const flush = useCallback(async () => {
+    window.clearTimeout(saveTimer.current);
+    const d = pending.current;
+    pending.current = null;
+    if (!d) return;
+    try {
+      const saved = await api.saveDashboard(d);
+      setCurrent((c) => (c?.id === saved.id ? { ...c, updatedAt: saved.updatedAt, updatedBy: saved.updatedBy } : c));
+      setSaveState('saved');
+      refreshDashboards();
+    } catch (e) {
+      setError((e as Error).message);
+      setSaveState('idle');
+    }
+  }, [api, refreshDashboards]);
+
   const persist = useCallback(
     (d: Dashboard) => {
       setCurrent(d);
+      drafts.set(d.id, d);
+      pending.current = d;
       setSaveState('saving');
       window.clearTimeout(saveTimer.current);
-      saveTimer.current = window.setTimeout(async () => {
-        try {
-          const saved = await api.saveDashboard(d);
-          setCurrent((c) => (c?.id === saved.id ? { ...c, updatedAt: saved.updatedAt, updatedBy: saved.updatedBy } : c));
-          setSaveState('saved');
-          refreshDashboards();
-        } catch (e) {
-          setError((e as Error).message);
-          setSaveState('idle');
-        }
-      }, 700);
+      saveTimer.current = window.setTimeout(flush, 700);
     },
-    [api, refreshDashboards],
+    [flush],
   );
+
+  // Cambio di scheda con un salvataggio in attesa: si salva subito.
+  useEffect(() => () => void flush(), [flush]);
 
   const create = async () => {
     const d = await api.saveDashboard({ title: 'Nuova dashboard', widgets: [], filters: { dims: [] } });
@@ -122,6 +117,7 @@ export function DashboardsView({ openId, onOpen, onGoChat }: { openId: string | 
     if (!current || !window.confirm(`Eliminare la dashboard "${current.title}"?`)) return;
     try {
       await api.deleteDashboard(current.id);
+      drafts.delete(current.id);
       setCurrent(null);
       onOpen(null);
       await refreshDashboards();
@@ -137,12 +133,13 @@ export function DashboardsView({ openId, onOpen, onGoChat }: { openId: string | 
     persist({ ...current, filters: { ...current.filters, dims: already ? dims : [...dims, { column, op: 'eq', value }] } });
   };
 
-  const onDragEnd = (e: DragEndEvent) => {
-    if (!current || !e.over || e.active.id === e.over.id) return;
-    const from = current.widgets.findIndex((w) => w.id === e.active.id);
-    const to = current.widgets.findIndex((w) => w.id === e.over!.id);
-    if (from < 0 || to < 0) return;
-    persist({ ...current, widgets: arrayMove(current.widgets, from, to) });
+  const commitLayout = (layouts: Record<string, WidgetLayout>) => {
+    if (!current) return;
+    const changed = current.widgets.some((w) => {
+      const l = layouts[w.id];
+      return l && (!w.layout || l.x !== w.layout.x || l.y !== w.layout.y || l.w !== w.layout.w || l.h !== w.layout.h);
+    });
+    if (changed) persist({ ...current, widgets: current.widgets.map((w) => (layouts[w.id] ? { ...w, layout: layouts[w.id] } : w)) });
   };
 
   // Stati del periodo solo per i widget presenti (dopo una rimozione o un cambio di dashboard).
@@ -155,8 +152,15 @@ export function DashboardsView({ openId, onOpen, onGoChat }: { openId: string | 
 
   const upsertWidget = (w: DashboardWidget) => {
     if (!current) return;
-    const exists = current.widgets.some((x) => x.id === w.id);
-    persist({ ...current, widgets: exists ? current.widgets.map((x) => (x.id === w.id ? w : x)) : [...current.widgets, w] });
+    const prev = current.widgets.find((x) => x.id === w.id);
+    // Larghezza cambiata dall'editor: si aggiorna anche la posizione nella griglia.
+    let layout = prev?.layout;
+    if (prev?.layout && prev.w !== w.w) {
+      const cols = COLS_FOR_W[w.w];
+      layout = { ...prev.layout, w: cols, x: Math.min(prev.layout.x, GRID_COLS - cols) };
+    }
+    const next = { ...w, ...(layout ? { layout } : {}) };
+    persist({ ...current, widgets: prev ? current.widgets.map((x) => (x.id === w.id ? next : x)) : [...current.widgets, next] });
     setEditing(null);
   };
 
@@ -204,7 +208,7 @@ export function DashboardsView({ openId, onOpen, onGoChat }: { openId: string | 
                   <Button onClick={create}>
                     <Plus size={16} /> Nuova dashboard
                   </Button>
-                  <Button variant="secondary" onClick={onGoChat}>
+                  <Button variant="secondary" onClick={() => onGoChat()}>
                     <Sparkles size={16} /> Chiedi all'AI
                   </Button>
                 </div>
@@ -266,7 +270,7 @@ export function DashboardsView({ openId, onOpen, onGoChat }: { openId: string | 
                         <Plus size={16} /> Aggiungi widget
                       </Button>
                     ) : (
-                      <Button onClick={onGoChat}>
+                      <Button onClick={() => onGoChat()}>
                         <Sparkles size={16} /> Vai alla chat
                       </Button>
                     )
@@ -274,51 +278,39 @@ export function DashboardsView({ openId, onOpen, onGoChat }: { openId: string | 
                 />
               </div>
             ) : (
-              <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd}>
-                <SortableContext items={current.widgets.map((w) => w.id)} strategy={rectSortingStrategy}>
-                  <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
-                    {current.widgets.map((w) => (
-                      <SortableWidget key={w.id} id={w.id} className={SPAN[w.w]}>
-                        {(handle) => (
-                          <VizCard
-                            spec={w.spec}
-                            filters={current.filters}
-                            className="h-full"
-                            height={w.w === 1 ? 220 : 260}
-                            onCrossFilter={crossFilter}
-                            onPeriodStatus={(st) => reportPeriod(w.id, st)}
-                            actions={
-                              <>
-                                <button
-                                  type="button"
-                                  {...handle}
-                                  aria-label="Sposta il widget"
-                                  title="Trascina per spostare"
-                                  className="p-1.5 rounded-md text-moca-gray hover:text-moca-black hover:bg-gray-100 cursor-grab active:cursor-grabbing touch-none"
-                                >
-                                  <GripVertical size={16} />
-                                </button>
-                                <IconButton label={`Larghezza: ${W_LABEL[w.w]}`} className="hidden lg:inline-flex" onClick={() => persist({ ...current, widgets: current.widgets.map((x) => (x.id === w.id ? { ...x, w: NEXT_W[x.w] } : x)) })}>
-                                  <MoveHorizontal size={16} />
-                                </IconButton>
-                                <IconButton label="Modifica" onClick={() => setEditing(w)}>
-                                  <Pencil size={16} />
-                                </IconButton>
-                                <IconButton label="Duplica" onClick={() => persist({ ...current, widgets: [...current.widgets, { ...w, id: newLocalId(), spec: { ...w.spec, id: newLocalId(), title: `${w.spec.title} (copia)` } }] })}>
-                                  <Copy size={16} />
-                                </IconButton>
-                                <IconButton label="Rimuovi" onClick={() => persist({ ...current, widgets: current.widgets.filter((x) => x.id !== w.id) })}>
-                                  <Trash2 size={16} />
-                                </IconButton>
-                              </>
-                            }
-                          />
-                        )}
-                      </SortableWidget>
-                    ))}
-                  </div>
-                </SortableContext>
-              </DndContext>
+              <>
+              <WidgetGrid widgets={current.widgets} onLayoutCommit={commitLayout}>
+                {(w) => (
+                  <VizCard
+                    spec={w.spec}
+                    filters={current.filters}
+                    className="h-full"
+                    fill
+                    dragClass={`${DRAG_CLASS} cursor-move`}
+                    onCrossFilter={crossFilter}
+                    onPeriodStatus={(st) => reportPeriod(w.id, st)}
+                    onRebuild={(prompt) => onGoChat(prompt)}
+                    actions={
+                      <>
+                        <span className={`${DRAG_CLASS} p-1.5 rounded-md text-moca-gray hover:text-moca-black hover:bg-gray-100 cursor-move`} title="Trascina per spostare" aria-label="Sposta il widget" role="button">
+                          <GripVertical size={16} />
+                        </span>
+                        <IconButton label="Modifica" onClick={() => setEditing(w)}>
+                          <Pencil size={16} />
+                        </IconButton>
+                        <IconButton label="Duplica" onClick={() => persist({ ...current, widgets: [...current.widgets, { ...w, id: newLocalId(), layout: undefined, spec: { ...w.spec, id: newLocalId(), title: `${w.spec.title} (copia)` } }] })}>
+                          <Copy size={16} />
+                        </IconButton>
+                        <IconButton label="Rimuovi" onClick={() => persist({ ...current, widgets: current.widgets.filter((x) => x.id !== w.id) })}>
+                          <Trash2 size={16} />
+                        </IconButton>
+                      </>
+                    }
+                  />
+                )}
+              </WidgetGrid>
+              <p className="text-[11px] text-moca-gray mt-3">Trascina un widget dal titolo per spostarlo, dall'angolo in basso a destra per ridimensionarlo: puoi affiancarne fino a sei per riga.</p>
+              </>
             )}
           </>
         )}

@@ -230,10 +230,11 @@ export function WidgetEditor({ initial, onSave, onClose, showWidth = true }: { i
                     </option>
                   ))}
                 </Select>
-                <Select value={f.op} onChange={(e) => setFilter(i, { ...f, op: e.target.value as Filter['op'] })} className="!py-1.5 text-xs !w-24">
+                <Select value={f.op} onChange={(e) => setFilter(i, { ...f, op: e.target.value as Filter['op'] })} className="!py-1.5 text-xs !w-28">
                   <option value="eq">uguale</option>
                   <option value="neq">diverso</option>
                   <option value="contains">contiene</option>
+                  <option value="not_contains">non contiene</option>
                   <option value="gte">≥</option>
                   <option value="lte">≤</option>
                 </Select>

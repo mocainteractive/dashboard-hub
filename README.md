@@ -42,13 +42,15 @@ npm run poc                     # http://localhost:5180
   riceve un'anteprima e lavora sull'id (`t1`, `t2`), senza ricopiare i dati.
   Le chiamate MCP dello stesso passaggio partono in parallelo; con molti
   strumenti Claude carica solo quelli che servono (ricerca strumenti).
-- Dashboard: i widget si spostano trascinandoli dalla maniglia e si
-  allargano con l'icona a doppia freccia. Il periodo scelto vale per tutti
-  i widget: se il dataset copre il periodo si filtrano le righe, altrimenti
-  il server rilegge i dati con la stessa chiamata MCP (guard e cache come
-  sempre). Ogni widget e la barra dei filtri dicono se il periodo è
-  applicato; i dataset composti in chat non si possono rileggere e lo
-  segnalano.
+- Dashboard a griglia libera (12 colonne): i widget si spostano trascinandoli
+  dal titolo, si affiancano e si ridimensionano dall'angolo o dai bordi.
+- Il periodo scelto vale per tutti i widget. Ogni dataset è una ricetta:
+  chiamata MCP, tabella estratta e trasformazione (filtri, raggruppamenti,
+  ordinamento, colonne rinominate) applicata dal server. Se il dataset non
+  copre il periodo, il server ripete la ricetta con le nuove date (guard e
+  cache come sempre). I vecchi dataset scritti a mano in chat si rendono
+  filtrabili con "Rendi filtrabile con l'AI": l'assistente li ricrea come
+  ricetta e i grafici passano da soli al nuovo dataset.
 - Dati, dataset, dashboard, conversazioni e cache restano in `.poc-data/`.
   Per cambiare cliente modifica `.env.poc` e riavvia: la sessione si rinnova
   da sola.

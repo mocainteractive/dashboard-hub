@@ -117,7 +117,7 @@ interface Live {
   abort?: AbortController;
 }
 
-export function ChatView() {
+export function ChatView({ initialText, onInitialUsed }: { initialText?: string | null; onInitialUsed?: () => void } = {}) {
   const { info } = useMoca();
   const { api, refreshDatasets } = useData();
   const [list, setList] = useState<ConversationMeta[]>([]);
@@ -128,7 +128,18 @@ export function ChatView() {
   const [error, setError] = useState<string | null>(null);
   const [adding, setAdding] = useState<VizSpec | null>(null);
   const bottom = useRef<HTMLDivElement>(null);
+  const input = useRef<HTMLTextAreaElement>(null);
   const streaming = !!info.streaming;
+
+  // Richiesta preparata altrove (es. "Rendi filtrabile" in dashboard): nuova conversazione, testo pronto da inviare.
+  useEffect(() => {
+    if (!initialText) return;
+    setConv(null);
+    setText(initialText);
+    onInitialUsed?.();
+    window.setTimeout(() => input.current?.focus(), 50);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialText]);
 
   const loadList = useCallback(() => api.listConversations().then(setList).catch(() => undefined), [api]);
   useEffect(() => {
@@ -371,7 +382,8 @@ export function ChatView() {
           )}
           <div className="bg-white rounded-xl shadow-card p-3">
             <TextArea
-              rows={2}
+              ref={input}
+              rows={text.length > 160 ? 4 : 2}
               value={text}
               maxLength={4000}
               disabled={!!disabledReason}

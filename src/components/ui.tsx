@@ -1,4 +1,4 @@
-import { useEffect, type ReactNode } from 'react';
+import { forwardRef, useEffect, type ReactNode } from 'react';
 import { X } from 'lucide-react';
 
 /** Componenti di base nello stile Moca Design System v2.0. */
@@ -74,9 +74,9 @@ export function Select(props: React.SelectHTMLAttributes<HTMLSelectElement>) {
   return <select {...props} className={`${inputClass} ${props.className ?? ''}`} />;
 }
 
-export function TextArea(props: React.TextareaHTMLAttributes<HTMLTextAreaElement>) {
-  return <textarea {...props} className={`${inputClass} ${props.className ?? ''}`} />;
-}
+export const TextArea = forwardRef<HTMLTextAreaElement, React.TextareaHTMLAttributes<HTMLTextAreaElement>>(function TextArea(props, ref) {
+  return <textarea ref={ref} {...props} className={`${inputClass} ${props.className ?? ''}`} />;
+});
 
 export function Field({ label, help, children }: { label: string; help?: string; children: ReactNode }) {
   return (

@@ -3,7 +3,7 @@ import { createApi, type Api } from './api';
 import { createDemoApi } from './demo';
 import { useMoca } from './MocaProvider';
 import { dateColumn, joinTables, type Table } from '../shared/engine';
-import type { DashboardFilters, DashboardMeta, Dataset, DatasetMeta, PeriodData, PeriodStatus, VizSpec } from '../shared/types';
+import type { DashboardFilters, DashboardMeta, Dataset, DatasetMeta, McpPlatform, PeriodData, PeriodStatus, VizSpec } from '../shared/types';
 
 /**
  * Stato condiviso dell'app e cache del browser: i dataset si scaricano una
@@ -19,6 +19,8 @@ interface DataContextValue {
   refreshDashboards: () => Promise<void>;
   loadDataset: (id: string) => Promise<Dataset>;
   loadPeriod: (id: string, from: string, to: string) => Promise<PeriodData>;
+  /** Cambia quando dei dataset vengono sostituiti o eliminati: i widget si ricaricano. */
+  datasetsVersion: number;
   forgetDataset: (id: string) => void;
 }
 
@@ -38,10 +40,23 @@ export function DataProvider({ children }: { children: ReactNode }) {
   const [dashboards, setDashboards] = useState<DashboardMeta[]>([]);
   const cache = useRef(new Map<string, Promise<Dataset>>());
   const periodCache = useRef(new Map<string, Promise<PeriodData>>());
+  const [datasetsVersion, setDatasetsVersion] = useState(0);
 
   const refreshDatasets = useCallback(async () => {
     try {
-      setDatasets(await api.listDatasets());
+      const list = await api.listDatasets();
+      // Dataset spariti dall'elenco (sostituiti o eliminati): si rileggono alla prossima richiesta.
+      const ids = new Set(list.map((d) => d.id));
+      let gone = false;
+      for (const k of [...cache.current.keys()]) {
+        if (!ids.has(k)) {
+          cache.current.delete(k);
+          gone = true;
+        }
+      }
+      for (const k of [...periodCache.current.keys()]) if (!ids.has(k.split('|')[0])) periodCache.current.delete(k);
+      setDatasets(list);
+      if (gone) setDatasetsVersion((v) => v + 1);
     } finally {
       setDatasetsLoading(false);
     }
@@ -58,13 +73,17 @@ export function DataProvider({ children }: { children: ReactNode }) {
 
   const loadDataset = useCallback(
     (id: string) => {
-      let p = cache.current.get(id);
-      if (!p) {
-        p = api.getDataset(id);
-        cache.current.set(id, p);
-        p.catch(() => cache.current.delete(id));
-      }
-      return p;
+      const load = (x: string, hops: number): Promise<Dataset> => {
+        let p = cache.current.get(x);
+        if (!p) {
+          // Un dataset sostituito (reso filtrabile in chat) passa da solo al nuovo.
+          p = api.getDataset(x).then((ds) => (ds.replacedBy && hops < 3 ? load(ds.replacedBy, hops + 1).catch(() => ds) : ds));
+          cache.current.set(x, p);
+          p.catch(() => cache.current.delete(x));
+        }
+        return p;
+      };
+      return load(id, 0);
     },
     [api],
   );
@@ -90,8 +109,8 @@ export function DataProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const value = useMemo(
-    () => ({ api, datasets, datasetsLoading, refreshDatasets, dashboards, refreshDashboards, loadDataset, loadPeriod, forgetDataset }),
-    [api, datasets, datasetsLoading, refreshDatasets, dashboards, refreshDashboards, loadDataset, loadPeriod, forgetDataset],
+    () => ({ api, datasets, datasetsLoading, refreshDatasets, dashboards, refreshDashboards, loadDataset, loadPeriod, forgetDataset, datasetsVersion }),
+    [api, datasets, datasetsLoading, refreshDatasets, dashboards, refreshDashboards, loadDataset, loadPeriod, forgetDataset, datasetsVersion],
   );
   return <DataContext.Provider value={value}>{children}</DataContext.Provider>;
 }
@@ -118,6 +137,8 @@ interface Resolved {
   title: string;
   status: PeriodStatus;
 }
+
+type VizState = { table: Table | null; title: string; loading: boolean; error: string | null; period: PeriodStatus; platforms: McpPlatform[] };
 
 /**
  * Dati di un dataset per il periodo della dashboard:
@@ -167,15 +188,9 @@ function combine(a: PeriodStatus, b: PeriodStatus): PeriodStatus {
 export function useVizTable(
   spec: Pick<VizSpec, 'datasetId' | 'join'>,
   filters?: DashboardFilters,
-): { table: Table | null; title: string; loading: boolean; error: string | null; period: PeriodStatus } {
-  const { loadDataset, loadPeriod } = useData();
-  const [state, setState] = useState<{ table: Table | null; title: string; loading: boolean; error: string | null; period: PeriodStatus }>({
-    table: null,
-    title: '',
-    loading: true,
-    error: null,
-    period: { kind: 'none' },
-  });
+): VizState {
+  const { loadDataset, loadPeriod, datasetsVersion } = useData();
+  const [state, setState] = useState<VizState>({ table: null, title: '', loading: true, error: null, period: { kind: 'none' }, platforms: [] });
   const joinId = spec.join?.datasetId;
   const joinOn = spec.join?.on.join(',');
   const from = filters?.dateFrom;
@@ -186,21 +201,24 @@ export function useVizTable(
     setState((s) => ({ ...s, loading: true, error: null }));
     const period = from || to ? { dateFrom: from, dateTo: to, dims: [] } : undefined;
     (async () => {
-      const a = await resolveForPeriod(await loadDataset(spec.datasetId), period, loadPeriod);
-      if (!joinId || !joinOn) return { table: a.table, title: a.title, period: a.status };
-      const b = await resolveForPeriod(await loadDataset(joinId), period, loadPeriod);
+      const dsA = await loadDataset(spec.datasetId);
+      const a = await resolveForPeriod(dsA, period, loadPeriod);
+      if (!joinId || !joinOn) return { table: a.table, title: a.title, period: a.status, platforms: dsA.platforms };
+      const dsB = await loadDataset(joinId);
+      const b = await resolveForPeriod(dsB, period, loadPeriod);
       return {
         table: joinTables(a.table, b.table, (joinOn ?? '').split(',').filter(Boolean), { a: a.title.split(',')[0], b: b.title.split(',')[0] }),
         title: `${a.title} + ${b.title}`,
         period: combine(a.status, b.status),
+        platforms: [...new Set([...dsA.platforms, ...dsB.platforms])],
       };
     })()
       .then((r) => alive && setState({ ...r, loading: false, error: null }))
-      .catch((e: Error) => alive && setState({ table: null, title: '', loading: false, error: e.message || 'Dati non disponibili', period: { kind: 'none' } }));
+      .catch((e: Error) => alive && setState({ table: null, title: '', loading: false, error: e.message || 'Dati non disponibili', period: { kind: 'none' }, platforms: [] }));
     return () => {
       alive = false;
     };
-  }, [spec.datasetId, joinId, joinOn, from, to, loadDataset, loadPeriod]);
+  }, [spec.datasetId, joinId, joinOn, from, to, loadDataset, loadPeriod, datasetsVersion]);
 
   return state;
 }

@@ -61,6 +61,14 @@ function matches(row: Row, f: Filter): boolean {
       return Array.isArray(target) && target.map(String).includes(String(v ?? ''));
     case 'contains':
       return String(v ?? '').toLowerCase().includes(String(target ?? '').toLowerCase());
+    case 'not_contains': {
+      // Un elenco di termini: la riga passa se non ne contiene nessuno (es. query non di brand).
+      const terms = (Array.isArray(target) ? target : [target]).map((x) => String(x ?? '').toLowerCase()).filter(Boolean);
+      const text = String(v ?? '').toLowerCase();
+      return !terms.some((t) => text.includes(t));
+    }
+    case 'not_in':
+      return !(Array.isArray(target) && target.map(String).includes(String(v ?? '')));
     case 'gt':
       return cmp(v, target as Cell) > 0;
     case 'gte':

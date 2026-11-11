@@ -36,6 +36,8 @@ interface Props {
   filters?: DashboardFilters;
   currency?: string;
   height?: number;
+  /** Le tabelle occupano al massimo l'altezza indicata (widget della griglia). */
+  fit?: boolean;
   showTable?: boolean;
   onCrossFilter?: (column: string, value: Cell) => void;
 }
@@ -77,7 +79,7 @@ function Legend({ series, onClick }: { series: ChartData['series']; onClick?: (k
   );
 }
 
-export function DataTable({ columns, rows, currency, max = 200 }: { columns: Column[]; rows: Row[]; currency: string; max?: number }) {
+export function DataTable({ columns, rows, currency, max = 200, maxHeight = 420 }: { columns: Column[]; rows: Row[]; currency: string; max?: number; maxHeight?: number }) {
   const [sort, setSort] = useState<{ key: string; dir: 1 | -1 } | null>(null);
   const sorted = useMemo(() => {
     if (!sort) return rows;
@@ -91,7 +93,7 @@ export function DataTable({ columns, rows, currency, max = 200 }: { columns: Col
     });
   }, [rows, sort]);
   return (
-    <div className="overflow-auto scrollbar-thin max-h-[420px] border border-moca-line rounded-lg">
+    <div className="overflow-auto scrollbar-thin border border-moca-line rounded-lg" style={{ maxHeight }}>
       <table className="w-full text-sm">
         <thead className="bg-moca-bg sticky top-0">
           <tr>
@@ -333,7 +335,8 @@ function SingleChart({ spec, data, height, currency, onCrossFilter }: { spec: Vi
   return null;
 }
 
-export function ChartView({ spec, table, filters, currency = 'EUR', height = 240, showTable, onCrossFilter }: Props) {
+export function ChartView({ spec, table, filters, currency = 'EUR', height = 240, showTable, onCrossFilter, fit }: Props) {
+  const tableMax = fit ? Math.max(height, 120) : undefined;
   const filtered = useMemo(() => applyDashboardFilters(table, filters), [table, filters]);
   const byKey = useMemo(() => new Map(filtered.columns.map((c) => [c.key, c])), [filtered]);
 
@@ -345,7 +348,7 @@ export function ChartView({ spec, table, filters, currency = 'EUR', height = 240
     const t = groupBy.length
       ? runQuery(filtered, { filters: spec.filters, groupBy, metrics: spec.metrics.map((m) => ({ key: m, agg: spec.agg })), dateGrain: spec.dateGrain, sort: spec.sort ?? { key: spec.metrics[0], dir: 'desc' }, limit: spec.limit })
       : runQuery(filtered, { filters: spec.filters, limit: spec.limit });
-    return <DataTable columns={t.columns} rows={t.rows} currency={currency} />;
+    return <DataTable columns={t.columns} rows={t.rows} currency={currency} maxHeight={tableMax} />;
   }
 
   const metricCols = spec.metrics.map((m) => byKey.get(m)).filter((c): c is Column => !!c);
@@ -353,7 +356,7 @@ export function ChartView({ spec, table, filters, currency = 'EUR', height = 240
 
   if (showTable) {
     const data = chartData(filtered, spec);
-    return <DataTable columns={data.table.columns} rows={data.table.rows} currency={currency} />;
+    return <DataTable columns={data.table.columns} rows={data.table.rows} currency={currency} maxHeight={tableMax} />;
   }
 
   if (mixedUnits) {

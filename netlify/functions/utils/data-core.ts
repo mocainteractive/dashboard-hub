@@ -13,6 +13,7 @@ import type {
   SessionInfo,
   VizSpec,
 } from '../../../src/shared/types';
+import { GRID_COLS } from '../../../src/shared/types';
 import { fail, ok } from './http';
 import { McpGateway } from './mcp-gateway';
 import { datasetForPeriod, PeriodError, validPeriod } from './period';
@@ -84,6 +85,20 @@ function cleanSpec(v: unknown, known: Set<string>): VizSpec | null {
   };
 }
 
+const int = (v: unknown, min: number, max: number) => (Number.isInteger(v) && (v as number) >= min && (v as number) <= max ? (v as number) : null);
+
+/** Posizione nella griglia a 12 colonne, solo se coerente. */
+function cleanLayout(v: unknown): DashboardWidget['layout'] | undefined {
+  if (!v || typeof v !== 'object') return undefined;
+  const l = v as Record<string, unknown>;
+  const w = int(l.w, 1, GRID_COLS);
+  const x = int(l.x, 0, GRID_COLS - 1);
+  const y = int(l.y, 0, 5000);
+  const h = int(l.h, 2, 60);
+  if (w === null || x === null || y === null || h === null || x + w > GRID_COLS) return undefined;
+  return { x, y, w, h };
+}
+
 export async function handleData(body: DataBody, session: AppSession, ts: TenantStore, rawStore: BlobStore): Promise<Response> {
   const scope = session.scope;
   const visible = async () => (scope ? (await readIndex<DatasetMeta>(ts, 'dataset')).filter((d) => inScope(scope, d.accounts)) : []);
@@ -96,7 +111,8 @@ export async function handleData(body: DataBody, session: AppSession, ts: Tenant
 
     // --- Dataset ---
     case 'datasets.list':
-      return ok({ datasets: await visible() });
+      // I dataset sostituiti restano leggibili (i vecchi grafici li seguono) ma non si elencano.
+      return ok({ datasets: (await visible()).filter((d) => !d.replacedBy) });
     case 'datasets.get': {
       if (!validId(body.id)) return fail(400, 'Identificativo non valido');
       const ds = await ts.get<Dataset>('dataset', body.id);
@@ -109,7 +125,11 @@ export async function handleData(body: DataBody, session: AppSession, ts: Tenant
       if (!ds || !scope || !inScope(scope, ds.accounts)) return fail(404, 'Dataset non trovato');
       try {
         const { from, to } = validPeriod(body.dateFrom, body.dateTo);
-        return ok({ data: await datasetForPeriod(new McpGateway(ts, rawStore, scope), ds, from, to) });
+        const loadParent = async (id: string) => {
+          const p = validId(id) ? await ts.get<Dataset>('dataset', id) : null;
+          return p && inScope(scope, p.accounts) ? p : null;
+        };
+        return ok({ data: await datasetForPeriod(new McpGateway(ts, rawStore, scope), ds, from, to, loadParent) });
       } catch (err) {
         if (err instanceof PeriodError) return fail(422, err.message);
         throw err;
@@ -141,7 +161,10 @@ export async function handleData(body: DataBody, session: AppSession, ts: Tenant
       const widgets: DashboardWidget[] = [];
       for (const w of Array.isArray(raw.widgets) ? raw.widgets.slice(0, 40) : []) {
         const spec = cleanSpec(w?.spec, known);
-        if (spec) widgets.push({ id: validId(w.id) ? w.id : newId(), spec, w: w.w === 1 || w.w === 3 ? w.w : 2 });
+        if (spec) {
+          const layout = cleanLayout(w.layout);
+          widgets.push({ id: validId(w.id) ? w.id : newId(), spec, w: w.w === 1 || w.w === 3 ? w.w : 2, ...(layout ? { layout } : {}) });
+        }
       }
       const id = validId(raw.id) ? raw.id : newId();
       const existing = await ts.get<Dashboard>('dashboard', id);
