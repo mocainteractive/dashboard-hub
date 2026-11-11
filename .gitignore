@@ -5,3 +5,6 @@ dist
 .netlify
 .env.*
 !.env.example
+!.env.poc.example
+.poc-data
+clients/

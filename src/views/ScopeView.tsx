@@ -31,7 +31,7 @@ export function MissingScope({ reason }: { reason?: string }) {
             <li>
               Nell'Hub, scheda del cliente, aggiungi la configurazione <code className="text-moca-black">{SCOPE_CONFIG_KEY}</code> con quel JSON come valore.
             </li>
-            <li>Aggiungi almeno una chiave AI del cliente: ANTHROPIC_API_KEY, OPENAI_API_KEY o GEMINI_API_KEY.</li>
+            <li>Aggiungi la chiave AI del cliente: ANTHROPIC_API_KEY.</li>
             <li>Riapri l'app dall'Hub.</li>
           </ul>
         </div>
@@ -216,7 +216,7 @@ export function ScopeView() {
               </Badge>
             ))
           ) : (
-            <p className="text-sm text-moca-text">Nessuna chiave AI configurata: aggiungi ANTHROPIC_API_KEY, OPENAI_API_KEY o GEMINI_API_KEY nella scheda del cliente.</p>
+            <p className="text-sm text-moca-text">Nessuna chiave AI configurata: aggiungi ANTHROPIC_API_KEY nella scheda del cliente.</p>
           )}
         </div>
       </Card>

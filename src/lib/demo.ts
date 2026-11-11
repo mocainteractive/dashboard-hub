@@ -41,7 +41,7 @@ export function demoSession(): MocaSession {
           { platform: 'tiktok_ads', id: '7012345678901234567', validFrom: '2024-01-01', validTo: null },
         ],
       },
-      providers: ['anthropic', 'openai', 'gemini'],
+      providers: ['anthropic'],
       mcpPlatforms: ['ga4', 'search_console', 'google_ads', 'meta_ads'],
     },
   };
@@ -341,6 +341,12 @@ export function createDemoApi(): Api {
         stats.hits++;
       }
       return { status: done ? 'done' : 'running', events: run.events.slice(after), total: run.events.length, message: run.message ?? null };
+    },
+    cancelRun: async (runId) => {
+      runs.delete(runId);
+    },
+    chatStream: async () => {
+      throw new Error('Streaming non disponibile nella demo.');
     },
     clearCache: async () => {
       stats.hits = 0;

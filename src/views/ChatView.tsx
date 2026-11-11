@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Bot, Brain, CheckCircle2, ChevronDown, Database, LayoutDashboard, MessageSquarePlus, RefreshCw, Send, Server, ShieldAlert, Sparkles, Trash2, AlertTriangle, Wand2 } from 'lucide-react';
+import { Bot, Brain, CheckCircle2, ChevronDown, Database, LayoutDashboard, MessageSquarePlus, RefreshCw, Send, Server, ShieldAlert, Sparkles, Square, Trash2, AlertTriangle, Wand2 } from 'lucide-react';
 import { AddToDashboard } from '../components/AddToDashboard';
 import { RichText } from '../components/RichText';
 import { VizCard } from '../components/VizCard';
-import { Button, EmptyState, ErrorNote, IconButton, Select, Spinner, TextArea } from '../components/ui';
+import { Button, EmptyState, ErrorNote, IconButton, Spinner, TextArea } from '../components/ui';
 import { useData } from '../lib/DataContext';
 import { useMoca } from '../lib/MocaProvider';
 import { formatDateTime, newLocalId } from '../lib/format';
-import { PROVIDER_LABELS, type AiProvider, type ChatMessage, type Conversation, type ConversationMeta, type RunEvent, type VizSpec } from '../shared/types';
+import { PROVIDER_LABELS, type ChatMessage, type Conversation, type ConversationMeta, type RunEvent, type StreamEvent, type VizSpec } from '../shared/types';
 
 /** Chat con i dati: storico, avanzamento in tempo reale, grafici nella risposta. */
 
@@ -108,18 +108,27 @@ function Message({ m, onAdd }: { m: ChatMessage; onAdd: (v: VizSpec) => void }) 
   );
 }
 
+interface Live {
+  runId?: string;
+  conversationId?: string;
+  events: RunEvent[];
+  text: string;
+  vizs: VizSpec[];
+  abort?: AbortController;
+}
+
 export function ChatView() {
   const { info } = useMoca();
   const { api, refreshDatasets } = useData();
   const [list, setList] = useState<ConversationMeta[]>([]);
   const [conv, setConv] = useState<Conversation | null>(null);
   const [text, setText] = useState('');
-  const [provider, setProvider] = useState<AiProvider | ''>(info.providers[0] ?? '');
   const [refresh, setRefresh] = useState(false);
-  const [running, setRunning] = useState<{ runId: string; events: RunEvent[] } | null>(null);
+  const [running, setRunning] = useState<Live | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [adding, setAdding] = useState<VizSpec | null>(null);
   const bottom = useRef<HTMLDivElement>(null);
+  const streaming = !!info.streaming;
 
   const loadList = useCallback(() => api.listConversations().then(setList).catch(() => undefined), [api]);
   useEffect(() => {
@@ -128,27 +137,31 @@ export function ChatView() {
 
   useEffect(() => {
     bottom.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
-  }, [conv?.messages.length, running?.events.length]);
+  }, [conv?.messages.length, running?.events.length, running?.vizs.length, running?.text.length]);
 
-  // Polling dell'avanzamento finché la risposta non è pronta.
+  const finish = useCallback(
+    (message: ChatMessage | null) => {
+      if (message) setConv((c) => (c ? { ...c, messages: [...c.messages, message] } : c));
+      setRunning(null);
+      refreshDatasets();
+      loadList();
+    },
+    [refreshDatasets, loadList],
+  );
+
+  // Flusso con polling (Netlify Functions): avanzamento finché la risposta non è pronta.
   useEffect(() => {
-    if (!running) return;
+    if (!running?.runId || streaming) return;
     let after = running.events.length;
     let stopped = false;
     const started = Date.now();
     const tick = async () => {
       if (stopped) return;
       try {
-        const s = await api.runStatus(running.runId, after);
+        const s = await api.runStatus(running.runId!, after);
         after = s.total;
         if (s.events.length) setRunning((r) => (r ? { ...r, events: [...r.events, ...s.events] } : r));
-        if (s.status === 'done' || s.status === 'error') {
-          if (s.message) setConv((c) => (c ? { ...c, messages: [...c.messages, s.message!] } : c));
-          setRunning(null);
-          refreshDatasets();
-          loadList();
-          return;
-        }
+        if (s.status === 'done' || s.status === 'error') return finish(s.message);
         if (Date.now() - started > 16 * 60 * 1000) {
           setError('La risposta sta impiegando troppo tempo. Riapri la conversazione tra qualche minuto.');
           setRunning(null);
@@ -165,7 +178,7 @@ export function ChatView() {
       window.clearTimeout(timer);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [running?.runId]);
+  }, [running?.runId, streaming]);
 
   const open = async (id: string) => {
     if (running) return;
@@ -177,23 +190,89 @@ export function ChatView() {
     }
   };
 
+  const addUserMessage = (conversationId: string, q: string) => {
+    const userMsg: ChatMessage = { id: newLocalId(), role: 'user', text: q, at: new Date().toISOString(), author: 'Tu' };
+    setConv((c) =>
+      c && c.id === conversationId
+        ? { ...c, messages: [...c.messages, userMsg] }
+        : { id: conversationId, title: q.slice(0, 70), createdAt: userMsg.at, updatedAt: userMsg.at, createdBy: 'Tu', messageCount: 1, messages: [userMsg] },
+    );
+  };
+
+  const onStreamEvent = (q: string) => (e: StreamEvent) => {
+    switch (e.type) {
+      case 'start':
+        addUserMessage(e.conversationId, q);
+        setRunning((r) => (r ? { ...r, conversationId: e.conversationId } : r));
+        break;
+      case 'step':
+        setRunning((r) => (r ? { ...r, events: [...r.events, e.event] } : r));
+        break;
+      case 'turn':
+        // Il testo scritto prima di usare gli strumenti diventa un passaggio.
+        setRunning((r) =>
+          r && r.text.trim() ? { ...r, text: '', events: [...r.events, { at: new Date().toISOString(), kind: 'info', text: r.text.trim().slice(0, 200) }] } : r,
+        );
+        break;
+      case 'text':
+        setRunning((r) => (r ? { ...r, text: r.text + e.delta } : r));
+        break;
+      case 'viz':
+        setRunning((r) => (r ? { ...r, vizs: [...r.vizs, e.spec] } : r));
+        break;
+      case 'done':
+        finish(e.message);
+        break;
+      case 'error':
+        setError(e.error);
+        setRunning(null);
+        break;
+    }
+  };
+
   const send = async (question?: string) => {
     const q = (question ?? text).trim();
-    if (!q || !provider || running) return;
+    if (!q || running) return;
     setError(null);
+    setText('');
+    setRefresh(false);
+    if (streaming) {
+      const abort = new AbortController();
+      setRunning({ events: [], text: '', vizs: [], abort });
+      try {
+        await api.chatStream({ conversationId: conv?.id, message: q, refresh }, onStreamEvent(q), abort.signal);
+      } catch (e) {
+        setError((e as Error).message);
+        setText(q);
+        setRunning(null);
+      }
+      // Flusso chiuso senza "done" (connessione caduta): si ricarica la conversazione salvata.
+      setRunning((r) => (r && !abort.signal.aborted ? null : r));
+      return;
+    }
     try {
-      const { runId, conversationId } = await api.chatStart({ conversationId: conv?.id, message: q, provider, refresh });
-      const userMsg: ChatMessage = { id: newLocalId(), role: 'user', text: q, at: new Date().toISOString(), author: 'Tu' };
-      setConv((c) =>
-        c && c.id === conversationId
-          ? { ...c, messages: [...c.messages, userMsg] }
-          : { id: conversationId, title: q.slice(0, 70), createdAt: userMsg.at, updatedAt: userMsg.at, createdBy: 'Tu', messageCount: 1, messages: [userMsg] },
-      );
-      setText('');
-      setRefresh(false);
-      setRunning({ runId, events: [] });
+      const { runId, conversationId } = await api.chatStart({ conversationId: conv?.id, message: q, refresh });
+      addUserMessage(conversationId, q);
+      setRunning({ runId, conversationId, events: [], text: '', vizs: [] });
     } catch (e) {
       setError((e as Error).message);
+      setText(q);
+    }
+  };
+
+  const stop = async () => {
+    if (!running) return;
+    const convId = running.conversationId ?? conv?.id;
+    if (running.abort) running.abort.abort();
+    else if (running.runId) await api.cancelRun(running.runId).catch(() => undefined);
+    if (running.abort) {
+      setRunning(null);
+      // Il server salva la risposta interrotta: la si rilegge dopo un attimo.
+      window.setTimeout(() => {
+        if (convId) api.getConversation(convId).then(setConv).catch(() => undefined);
+        refreshDatasets();
+        loadList();
+      }, 1200);
     }
   };
 
@@ -208,7 +287,7 @@ export function ChatView() {
     }
   };
 
-  const disabledReason = !info.scope ? 'Perimetro del cliente non configurato.' : !info.providers.length ? 'Nessuna chiave AI configurata per questo cliente nell\'Hub.' : null;
+  const disabledReason = !info.scope ? 'Perimetro del cliente non configurato.' : !info.providers.length ? "Nessuna chiave Anthropic configurata per questo cliente nell'Hub." : null;
 
   return (
     <div className="grid lg:grid-cols-[240px_1fr] gap-6">
@@ -261,9 +340,18 @@ export function ChatView() {
               <div className="h-8 w-8 rounded-full bg-moca-red-light text-moca-red flex items-center justify-center shrink-0">
                 <Spinner size={4} />
               </div>
-              <div className="bg-white rounded-2xl rounded-tl-sm shadow-card px-4 py-3 flex-1">
-                <p className="text-sm text-moca-black font-medium">Sto preparando la risposta</p>
-                <Events events={running.events} live />
+              <div className="flex-1 min-w-0">
+                <div className="bg-white rounded-2xl rounded-tl-sm shadow-card px-4 py-3">
+                  {running.text ? <RichText text={running.text} /> : <p className="text-sm text-moca-black font-medium">Sto preparando la risposta</p>}
+                  <Events events={running.events} live />
+                </div>
+                {!!running.vizs.length && (
+                  <div className={`grid gap-4 mt-3 ${running.vizs.length > 1 ? 'xl:grid-cols-2' : ''}`}>
+                    {running.vizs.map((v) => (
+                      <VizCard key={v.id} spec={v} height={220} />
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
           )}
@@ -298,22 +386,19 @@ export function ChatView() {
               className="!border-0 !ring-0 !px-1 resize-none"
             />
             <div className="flex flex-wrap items-center justify-between gap-2 mt-2">
-              <div className="flex items-center gap-2">
-                <Select aria-label="Modello AI" value={provider} onChange={(e) => setProvider(e.target.value as AiProvider)} className="!w-auto !py-1.5 text-xs" disabled={!info.providers.length}>
-                  {info.providers.map((p) => (
-                    <option key={p} value={p}>
-                      {PROVIDER_LABELS[p]}
-                    </option>
-                  ))}
-                </Select>
-                <label className="flex items-center gap-1.5 text-xs text-moca-text cursor-pointer select-none" title="Ignora la cache e rilegge i dati dai server">
-                  <input type="checkbox" checked={refresh} onChange={(e) => setRefresh(e.target.checked)} className="accent-moca-red" />
-                  <RefreshCw size={12} /> Dati aggiornati
-                </label>
-              </div>
-              <Button onClick={() => send()} disabled={!text.trim() || !!running || !!disabledReason}>
-                <Send size={16} /> Invia
-              </Button>
+              <label className="flex items-center gap-1.5 text-xs text-moca-text cursor-pointer select-none" title="Ignora la cache e rilegge i dati dai server">
+                <input type="checkbox" checked={refresh} onChange={(e) => setRefresh(e.target.checked)} className="accent-moca-red" />
+                <RefreshCw size={12} /> Rileggi i dati dai server
+              </label>
+              {running ? (
+                <Button variant="secondary" onClick={stop}>
+                  <Square size={14} /> Interrompi
+                </Button>
+              ) : (
+                <Button onClick={() => send()} disabled={!text.trim() || !!disabledReason}>
+                  <Send size={16} /> Invia
+                </Button>
+              )}
             </div>
           </div>
         </div>

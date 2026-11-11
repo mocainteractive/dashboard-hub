@@ -31,12 +31,19 @@ const VIZ_TYPES = ['kpi', 'line', 'area', 'bar', 'hbar', 'stacked', 'pie', 'tabl
 
 const isInternal = (s: AppSession) => INTERNAL_ROLES.includes(s.role);
 
+/** Chiave del segnale di interruzione di un run. */
+export const stopKey = (runId: string) => `${runId}_stop`.slice(0, 80);
+
+/** Chat in streaming disponibile (server POC locale o Cloud Run, non Netlify Functions). */
+export const streamingEnabled = () => process.env.CHAT_STREAMING === 'true';
+
 export function sessionInfoOf(s: AppSession): SessionInfo {
   return {
     scope: s.scope,
     scopeError: s.scopeError,
-    providers: (['anthropic', 'openai', 'gemini'] as const).filter((p) => !!s.keys[p]),
+    providers: s.keys.anthropic ? ['anthropic'] : [],
     mcpPlatforms: s.scope ? scopedPlatforms(s.scope).filter((p) => !!serverFor(p)) : [],
+    streaming: streamingEnabled(),
   };
 }
 
@@ -180,6 +187,15 @@ export async function handleData(body: DataBody, session: AppSession, ts: Tenant
       if (!run) return fail(404, 'Elaborazione non trovata');
       const after = Math.max(0, Number(body.after) || 0);
       return ok({ status: run.status, events: run.events.slice(after), total: run.events.length, message: run.message ?? null });
+    }
+
+    case 'run.cancel': {
+      if (!validId(body.id)) return fail(400, 'Identificativo non valido');
+      const run = await ts.get<RunState>('run', body.id);
+      if (!run) return fail(404, 'Elaborazione non trovata');
+      // Segnale separato: la background function riscrive il run a ogni passaggio.
+      await ts.set('run', stopKey(body.id), { at: new Date().toISOString(), by: session.uname });
+      return ok();
     }
 
     // --- Cache ---

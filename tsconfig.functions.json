@@ -11,6 +11,6 @@
     "noUnusedLocals": true,
     "noUnusedParameters": true
   },
-  "include": ["netlify/functions", "src/shared"],
+  "include": ["netlify/functions", "src/shared", "server"],
   "exclude": ["netlify/functions/send-feedback.ts"]
 }

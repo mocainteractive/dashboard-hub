@@ -24,6 +24,8 @@ export interface AppSession {
   scopeError?: string;
   keys: Partial<Record<AiProvider, string>>;
   models: Partial<Record<AiProvider, string>>;
+  /** Sforzo di ragionamento di Claude (AI_EFFORT nell'Hub), facoltativo. */
+  effort?: string;
   exp: number;
 }
 

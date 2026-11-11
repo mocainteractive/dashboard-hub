@@ -3,6 +3,9 @@
   command = "npm run build"
   publish = "dist"
   functions = "netlify/functions"
+  # Niente build per branch e deploy preview (i branch claude/* e le PR non
+  # consumano crediti): si pubblica solo il branch di produzione. Exit 0 = salta.
+  ignore = 'if [ "$CONTEXT" = "deploy-preview" ] || [ "$CONTEXT" = "branch-deploy" ]; then exit 0; else exit 1; fi'
 
 [build.environment]
   # URL dell'Hub usato dall'SDK e da start-session per validare i launch token.

@@ -21,7 +21,7 @@ const sessionFor = (cid: string, scope = scopeA()): AppSession => ({
 });
 
 describe('sessione cifrata', () => {
-  const base = { uid: 'u1', uname: 'Mario', role: 'external', cid: 'aaaa-bbbb', cname: 'A', scope: scopeA(), keys: { openai: 'sk-segreta' }, models: {} };
+  const base = { uid: 'u1', uname: 'Mario', role: 'external', cid: 'aaaa-bbbb', cname: 'A', scope: scopeA(), keys: { anthropic: 'sk-segreta' }, models: {} };
 
   it('si apre solo con il segreto giusto e non contiene testo in chiaro', () => {
     const t = sealSession(base, SECRET);

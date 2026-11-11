@@ -2,7 +2,7 @@
 
 App satellite del Moca Hub che costruisce dashboard interattive sui dati di un
 cliente, leggendoli dai server MCP di Moca (GA4, Search Console, Google Ads,
-Meta, Pinterest), con chat AI sui dati, storico e cache intelligente.
+Meta, Pinterest), con chat AI sui dati (Claude), storico e cache intelligente.
 
 **Requisito numero uno: isolamento totale tra clienti.** Un cliente vede solo
 i suoi dati, in nessun caso quelli di un altro cliente.
@@ -21,10 +21,11 @@ i suoi dati, in nessun caso quelli di un altro cliente.
   un clic su un elemento del grafico, editor visuale dei widget.
 - **Incrociare i dati.** Unione di due dataset su una colonna comune (es. data)
   per confrontare fonti diverse nello stesso grafico.
-- **Chat con i dati.** Assistente AI con Anthropic, OpenAI o Gemini (chiavi
-  dall'Hub: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`) che
-  interroga gli MCP, salva dataset e crea visualizzazioni da aggiungere alle
-  dashboard.
+- **Chat con i dati.** Assistente Claude (chiave dall'Hub:
+  `ANTHROPIC_API_KEY`) che interroga gli MCP, salva dataset e crea
+  visualizzazioni da aggiungere alle dashboard. Le risposte MCP diventano
+  tabelle sul server, le chiamate partono in parallelo e il testo arriva in
+  streaming (POC locale, poi Cloud Run).
 - **Memoria.** Storico delle conversazioni, dei dataset e delle dashboard per
   cliente, condiviso tra i colleghi che lavorano sullo stesso cliente.
 - **Cache intelligente.** Dati già visti non richiedono nuove chiamate MCP.
@@ -186,7 +187,10 @@ mostra statistiche di cache (risposte riusate, chiamate fatte).
 | `netlify/functions/utils/mcp-guard.ts` | blindatura delle chiamate MCP |
 | `netlify/functions/utils/tenant-store.ts` | archivio per cliente |
 | `netlify/functions/utils/mcp-cache.ts` | cache MCP con scadenze |
-| `netlify/functions/utils/llm.ts` | Anthropic, OpenAI, Gemini |
+| `netlify/functions/utils/llm.ts` | Claude: streaming, ricerca strumenti, caching |
+| `netlify/functions/utils/tabular.ts` | risposte MCP in tabelle, senza AI |
+| `netlify/functions/utils/chat-core.ts` | turno di chat condiviso (Netlify e streaming) |
+| `server/poc.ts` | POC locale con streaming, base per Cloud Run |
 | `netlify/functions/utils/agent.ts` | ciclo dell'assistente e strumenti |
 | `netlify/functions/start-session.ts` | apertura sessione dall'Hub |
 | `netlify/functions/data.ts` | dataset, dashboard, conversazioni, cache |
@@ -203,7 +207,8 @@ mostra statistiche di cache (risposte riusate, chiamate fatte).
 3. Nell'Hub, per ogni cliente: configurazione `DATA_LAKE_CLIENT_JSON` con il
    contenuto di `clients/<slug>.json` e almeno una chiave AI.
 4. Registrazione nel pannello Applicazioni con `required_api_keys:
-   ["DATA_LAKE_CLIENT_JSON", "ANY_LLM"]`, prima in `maintenance`, poi `active`.
+   ["DATA_LAKE_CLIENT_JSON", "ANTHROPIC_API_KEY"]`, prima in `maintenance`,
+   poi `active`.
 
 ## 8. EVOLUZIONI POSSIBILI
 

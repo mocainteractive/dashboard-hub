@@ -51,12 +51,11 @@ export interface ClientScope {
   accounts: ScopeAccount[];
 }
 
-export type AiProvider = 'anthropic' | 'openai' | 'gemini';
+/** L'app usa solo Claude (Anthropic). */
+export type AiProvider = 'anthropic';
 
 export const PROVIDER_LABELS: Record<AiProvider, string> = {
-  anthropic: 'Claude (Anthropic)',
-  openai: 'OpenAI',
-  gemini: 'Gemini (Google)',
+  anthropic: 'Claude',
 };
 
 // --- Dataset e visualizzazioni ---
@@ -230,6 +229,8 @@ export interface RunState {
   finishedAt?: string;
   /** Messaggio finale dell'assistente, quando status = done/error. */
   message?: ChatMessage;
+  /** Richiesta di interruzione dall'utente. */
+  cancelRequested?: boolean;
 }
 
 export interface CacheStats {
@@ -246,4 +247,16 @@ export interface SessionInfo {
   scopeError?: string;
   providers: AiProvider[];
   mcpPlatforms: McpPlatform[];
+  /** true quando il server supporta la chat in streaming (POC locale, Cloud Run). */
+  streaming?: boolean;
 }
+
+/** Eventi della chat in streaming (Server-Sent Events). */
+export type StreamEvent =
+  | { type: 'start'; conversationId: string; title: string }
+  | { type: 'step'; event: RunEvent }
+  | { type: 'text'; delta: string }
+  | { type: 'turn' }
+  | { type: 'viz'; spec: VizSpec }
+  | { type: 'done'; message: ChatMessage }
+  | { type: 'error'; error: string };

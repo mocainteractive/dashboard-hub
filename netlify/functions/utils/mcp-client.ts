@@ -11,7 +11,7 @@ import type { BlobStore } from './tenant-store';
  * passare prima da mcp-guard.
  */
 
-const ENV_PREFIX: Record<McpPlatform, string> = {
+export const MCP_ENV_PREFIX: Record<McpPlatform, string> = {
   ga4: 'MCP_GA4',
   search_console: 'MCP_GSC',
   google_ads: 'MCP_GADS',
@@ -37,8 +37,8 @@ export interface McpToolDef {
 export class McpError extends Error {}
 
 export function serverFor(p: McpPlatform): McpServer | null {
-  const url = process.env[`${ENV_PREFIX[p]}_URL`]?.trim();
-  const token = process.env[`${ENV_PREFIX[p]}_TOKEN`]?.trim() || undefined;
+  const url = process.env[`${MCP_ENV_PREFIX[p]}_URL`]?.trim();
+  const token = process.env[`${MCP_ENV_PREFIX[p]}_TOKEN`]?.trim() || undefined;
   return url ? { url, token } : null;
 }
 
